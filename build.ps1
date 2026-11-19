@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'OuterRAR builds on Windows.' }
+if ($env:OS -ne 'Windows_NT') { throw 'NestedUnpack builds on Windows.' }
 
 $go = (Get-Command go -CommandType Application -ErrorAction Stop).Source
 $compiler = (Get-Command $Cxx -CommandType Application -ErrorAction Stop).Source
@@ -17,8 +17,8 @@ $output = [IO.Path]::GetFullPath($OutputDirectory)
 
 $stage = Join-Path $output ('.build-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($stage) | Out-Null
-$extractor = Join-Path $stage 'OuterRar.exe'
-$helper = Join-Path $stage 'OuterRarShell.exe'
+$extractor = Join-Path $stage 'NestedUnpack.exe'
+$helper = Join-Path $stage 'NestedUnpackShell.exe'
 $object = Join-Path $stage 'shell.o'
 $source = Join-Path (Join-Path $PSScriptRoot 'shell') 'shell.cpp'
 

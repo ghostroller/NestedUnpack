@@ -73,7 +73,7 @@ HRESULT launchExtractor(IShellItemArray* selection, Mode mode) {
     const DWORD exeSize = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (exeSize == 0 || exeSize >= buffer.size()) return lastError();
     const std::wstring shellExe = buffer.substr(0, exeSize);
-    const std::wstring extractor = shellExe.substr(0, shellExe.find_last_of(L"\\/") + 1) + L"OuterRar.exe";
+    const std::wstring extractor = shellExe.substr(0, shellExe.find_last_of(L"\\/") + 1) + L"NestedUnpack.exe";
 
     const DWORD tempSize = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
     if (tempSize == 0 || tempSize >= buffer.size()) return lastError();
@@ -82,7 +82,7 @@ HRESULT launchExtractor(IShellItemArray* selection, Mode mode) {
     if (FAILED(result)) return result;
     wchar_t guid[39];
     if (StringFromGUID2(batchId, guid, 39) == 0) return E_FAIL;
-    const std::wstring manifest = buffer.substr(0, tempSize) + L"OuterRar-Selection-" + guid + L".utf8";
+    const std::wstring manifest = buffer.substr(0, tempSize) + L"NestedUnpack-Selection-" + guid + L".utf8";
     const wchar_t* option = mode == Mode::nested ? L"--nested-selection-file" : L"--selection-file";
     std::wstring arguments = L"\"" + extractor + L"\" " + option + L" \"" + manifest + L"\"";
 
@@ -182,7 +182,7 @@ public:
         if (FAILED(result) && !noUI_) {
             wchar_t message[160];
             swprintf(message, 160, L"\u65e0\u6cd5\u542f\u52a8\u6279\u91cf\u89e3\u538b\u3002\n\nHRESULT 0x%08lX", static_cast<unsigned long>(result));
-            MessageBoxW(nullptr, message, L"OuterRar", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            MessageBoxW(nullptr, message, L"NestedUnpack", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         }
     }
 

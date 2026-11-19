@@ -340,7 +340,7 @@ func (session *unpackSession) unpackUsing7Zip(input, dest, work string, zipInput
 
 func (session *unpackSession) unpack(source, kind string) (string, error) {
 	parent := filepath.Dir(source)
-	work, err := os.MkdirTemp(parent, ".outerrar-nested-")
+	work, err := os.MkdirTemp(parent, ".nestedunpack-nested-")
 	if err != nil {
 		return "", err
 	}

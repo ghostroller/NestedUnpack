@@ -3,7 +3,7 @@ param([switch]$Remove)
 
 $ErrorActionPreference = 'Stop'
 $registry = [Microsoft.Win32.Registry]::CurrentUser
-$verbKey = 'Software\Classes\*\shell\OuterRar.ExtractNested'
+$verbKey = 'Software\Classes\*\shell\NestedUnpack.Extract'
 $clsid = '{9E941531-6A19-4358-A773-30CD664BE034}'
 $classKey = "Software\Classes\CLSID\$clsid"
 
@@ -12,8 +12,8 @@ if ($Remove) {
     $registry.DeleteSubKeyTree($classKey, $false)
 } else {
     $bin = Join-Path $PSScriptRoot 'bin'
-    $extractor = Join-Path $bin 'OuterRar.exe'
-    $server = Join-Path $bin 'OuterRarShell.exe'
+    $extractor = Join-Path $bin 'NestedUnpack.exe'
+    $server = Join-Path $bin 'NestedUnpackShell.exe'
     foreach ($file in @($extractor, $server)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
             throw "Missing executable: $file"
@@ -39,18 +39,19 @@ if ($Remove) {
     } finally { $verb.Dispose() }
 }
 
-# Remove the outer-only command installed by earlier releases.
+# Remove menu entries registered before the rename.
+$registry.DeleteSubKeyTree('Software\Classes\*\shell\OuterRar.ExtractNested', $false)
 $registry.DeleteSubKeyTree('Software\Classes\*\shell\OuterRar.Extract', $false)
 $registry.DeleteSubKeyTree('Software\Classes\CLSID\{DF5835F3-405C-4950-94CE-121C0EA39879}', $false)
 
-if (-not ('OuterRar.AssociationChange' -as [type])) {
-    Add-Type -Namespace OuterRar -Name AssociationChange -MemberDefinition @'
+if (-not ('NestedUnpack.AssociationChange' -as [type])) {
+    Add-Type -Namespace NestedUnpack -Name AssociationChange -MemberDefinition @'
         [System.Runtime.InteropServices.DllImport("shell32.dll")]
         public static extern void SHChangeNotify(uint eventId, uint flags,
                                                 IntPtr item1, IntPtr item2);
 '@
 }
-[OuterRar.AssociationChange]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+[NestedUnpack.AssociationChange]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
 
-if ($Remove) { 'OuterRAR Explorer command removed.' }
-else { 'OuterRAR Explorer command registered for .zip and .mp4.' }
+if ($Remove) { 'NestedUnpack Explorer command removed.' }
+else { 'NestedUnpack Explorer command registered for .zip and .mp4.' }

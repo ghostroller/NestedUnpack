@@ -26,7 +26,7 @@ func extractRAR(entry *zip.File, source string) (string, error) {
 		return "", errors.New("成员大小超出支持范围")
 	}
 	parent := filepath.Dir(source)
-	part, err := os.CreateTemp(parent, ".outerrar-*.part")
+	part, err := os.CreateTemp(parent, ".nestedunpack-*.part")
 	if err != nil {
 		return "", err
 	}

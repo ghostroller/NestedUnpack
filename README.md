@@ -1,6 +1,6 @@
-# OuterRar
+# NestedUnpack
 
-OuterRar 是一个 Windows 批量解压工具，能识别普通 ZIP 和拼接在 MP4 后面的 ZIP 或 ZIP64。它会逐层解开只含一个压缩包的嵌套结构，并把同一组 7z 分卷当作一个包处理。最终文件保留包内目录结构，写入各自源文件旁的 `文件名-解压` 文件夹。同名目录会自动加编号。
+NestedUnpack 是一个 Windows 批量解压工具，能识别普通 ZIP 和拼接在 MP4 后面的 ZIP 或 ZIP64。它会逐层解开只含一个压缩包的嵌套结构，并把同一组 7z 分卷当作一个包处理。最终文件保留包内目录结构，写入各自源文件旁的 `文件名-解压` 文件夹。同名目录会自动加编号。
 
 ## 使用
 
@@ -9,7 +9,7 @@ OuterRar 是一个 Windows 批量解压工具，能识别普通 ZIP 和拼接在
 也可以从 PowerShell 启动同一流程。
 
 ```powershell
-.\bin\OuterRar.exe --nested 'D:\Downloads\one.mp4' 'D:\Downloads\two.zip'
+.\bin\NestedUnpack.exe --nested 'D:\Downloads\one.mp4' 'D:\Downloads\two.zip'
 ```
 
 ## 构建和注册

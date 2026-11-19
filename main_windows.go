@@ -90,7 +90,7 @@ func run(args []string) int {
 		args = args[1:]
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "用法: OuterRar.exe [--nested] <文件> [更多文件...]")
+		fmt.Fprintln(os.Stderr, "用法: NestedUnpack.exe [--nested] <文件> [更多文件...]")
 		if fromExplorer {
 			notify("选区内没有可处理的文件。", true)
 		}
@@ -144,7 +144,7 @@ func readSelection(file string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(filepath.Dir(absolute), temp) || !strings.HasPrefix(name, "OuterRar-Selection-") || !strings.HasSuffix(name, ".utf8") {
+	if !strings.EqualFold(filepath.Dir(absolute), temp) || !strings.HasPrefix(name, "NestedUnpack-Selection-") || !strings.HasSuffix(name, ".utf8") {
 		return nil, errors.New("无效的选区清单路径")
 	}
 	defer os.Remove(absolute)
