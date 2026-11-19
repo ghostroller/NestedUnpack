@@ -12,7 +12,7 @@ if ($Remove) {
     $registry.DeleteSubKeyTree($classKey, $false)
 } else {
     $bin = Join-Path $PSScriptRoot 'bin'
-    $extractor = Join-Path $bin 'NestedUnpack.exe'
+    $extractor = Join-Path $bin 'NestedUnpackGUI.exe'
     $server = Join-Path $bin 'NestedUnpackShell.exe'
     foreach ($file in @($extractor, $server)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {

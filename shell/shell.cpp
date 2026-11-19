@@ -73,7 +73,8 @@ HRESULT launchExtractor(IShellItemArray* selection, Mode mode) {
     const DWORD exeSize = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (exeSize == 0 || exeSize >= buffer.size()) return lastError();
     const std::wstring shellExe = buffer.substr(0, exeSize);
-    const std::wstring extractor = shellExe.substr(0, shellExe.find_last_of(L"\\/") + 1) + L"NestedUnpack.exe";
+    const std::wstring extractor = shellExe.substr(0, shellExe.find_last_of(L"\\/") + 1) +
+        (mode == Mode::nested ? L"NestedUnpackGUI.exe" : L"NestedUnpack.exe");
 
     const DWORD tempSize = GetTempPathW(static_cast<DWORD>(buffer.size()), buffer.data());
     if (tempSize == 0 || tempSize >= buffer.size()) return lastError();
@@ -100,7 +101,7 @@ HRESULT launchExtractor(IShellItemArray* selection, Mode mode) {
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION process{};
-        const DWORD flags = mode == Mode::nested ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW;
+        const DWORD flags = mode == Mode::nested ? 0 : CREATE_NO_WINDOW;
         if (CreateProcessW(extractor.c_str(), arguments.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &startup, &process)) {
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);

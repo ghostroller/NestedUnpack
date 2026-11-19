@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -38,7 +39,7 @@ func find7Zip() (string, error) {
 	return "", errors.New("找不到 7-Zip 命令行程序 7z.exe")
 }
 
-func unpackWith7Zip(exe, archive, dest string, password *string, askPassword func() (string, error), progress func(int)) error {
+func unpackWith7Zip(ctx context.Context, exe, archive, dest string, tryPasswords func(func(string) error) error, progress func(int)) error {
 	dest, err := filepath.Abs(dest)
 	if err != nil {
 		return err
@@ -50,57 +51,35 @@ func unpackWith7Zip(exe, archive, dest string, password *string, askPassword fun
 	if len(entries) != 0 {
 		return errors.New("解压暂存目录必须为空")
 	}
-	var candidate string
-	if password != nil {
-		candidate = *password
-	}
-	lastPercent := -1
-	report := func(percent int) {
-		if progress != nil && percent > lastPercent {
-			lastPercent = percent
-			progress(percent)
-		}
-	}
-	for {
-		listing := sevenZipListing{}
-		// Bare listing omits the free-form archive comment and container metadata.
-		listArgs := []string{"l", "-slt", "-ba", "-sccUTF-8", "-bsp0", "--", archive}
-		err = run7Zip(exe, candidate, listArgs, nil, listing.inspect)
-		if err == nil && listing.encrypted && candidate == "" {
-			err = err7ZipPassword
-		}
-		if err == nil {
-			report(0)
-			err = extractListed7Zip(exe, archive, dest, candidate, report)
-			if err == nil {
-				if password != nil {
-					*password = candidate
-				}
-				report(100)
-				return nil
+	var listing sevenZipListing
+	listed := false
+	return tryPasswords(func(candidate string) error {
+		if !listed {
+			listing = sevenZipListing{}
+			// Bare listing omits free-form comments and container metadata.
+			args := []string{"l", "-slt", "-ba", "-sccUTF-8", "-bsp0", "--", archive}
+			if err := run7Zip(ctx, exe, candidate, args, nil, listing.inspect); err != nil {
+				return err
 			}
-			if errors.Is(err, err7ZipPassword) && askPassword != nil {
-				if cleanupErr := clear7ZipStage(dest); cleanupErr != nil {
-					return fmt.Errorf("清理本次解压的文件失败 · %w", cleanupErr)
-				}
+			listed = true
+		}
+		if listing.encrypted && candidate == "" {
+			return err7ZipPassword
+		}
+		progress(0)
+		err := extractListed7Zip(ctx, exe, archive, dest, candidate, progress)
+		if errors.Is(err, err7ZipPassword) {
+			if cleanupErr := clear7ZipStage(dest); cleanupErr != nil {
+				return fmt.Errorf("清理本次解压的文件失败 · %w", cleanupErr)
 			}
 		}
-		if !errors.Is(err, err7ZipPassword) || askPassword == nil {
-			return err
-		}
-		candidate, err = askPassword()
-		if err != nil {
-			return err
-		}
-		if candidate == "" {
-			return errors.New("未输入解压密码")
-		}
-	}
+		return err
+	})
 }
 
-func extractListed7Zip(exe, archive, dest, password string, report func(int)) error {
+func extractListed7Zip(ctx context.Context, exe, archive, dest, password string, report func(int)) error {
 	args := []string{"x", "-sccUTF-8", "-bsp1", "-bse2", "-bb0", "-y", "-sns-", "-o" + dest, "--", archive}
-	return run7Zip(exe, password, args, split7ZipProgress, func(line string) error {
+	return run7Zip(ctx, exe, password, args, split7ZipProgress, func(line string) error {
 		if number, _, ok := strings.Cut(strings.TrimSpace(line), "%"); ok && len(number) <= 3 {
 			if percent, err := strconv.Atoi(number); err == nil && percent >= 0 && percent <= 100 {
 				report(min(percent, 99))
@@ -175,8 +154,8 @@ func (listing *sevenZipListing) inspect(line string) error {
 	return nil
 }
 
-func run7Zip(exe, password string, arguments []string, split bufio.SplitFunc, inspect func(string) error) error {
-	command := exec.Command(exe, arguments...)
+func run7Zip(ctx context.Context, exe, password string, arguments []string, split bufio.SplitFunc, inspect func(string) error) error {
+	command := exec.CommandContext(ctx, exe, arguments...)
 	const createNoWindow = 0x08000000
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
 	if password != "" {
@@ -217,6 +196,9 @@ func run7Zip(exe, password string, arguments []string, split bufio.SplitFunc, in
 		_, _ = io.Copy(io.Discard, stdout)
 	}
 	commandErr := command.Wait()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if inspectionErr != nil {
 		return inspectionErr
 	}

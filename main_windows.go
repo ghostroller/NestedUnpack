@@ -75,15 +75,19 @@ func main() { os.Exit(run(os.Args[1:])) }
 func run(args []string) int {
 	nested := len(args) > 0 && (args[0] == "--nested" || args[0] == "--nested-selection-file")
 	fromExplorer := len(args) > 0 && (args[0] == "--selection-file" || args[0] == "--nested-selection-file")
+	notifyExplorer := notify
+	if nested {
+		notifyExplorer = guiNotify
+	}
 	if fromExplorer {
 		if len(args) != 2 {
-			notify("无法读取资源管理器选区。", true)
+			notifyExplorer("无法读取资源管理器选区。", true)
 			return 2
 		}
 		var err error
 		args, err = readSelection(args[1])
 		if err != nil {
-			notify("无法读取资源管理器选区。\n"+err.Error(), true)
+			notifyExplorer("无法读取资源管理器选区。\n"+err.Error(), true)
 			return 2
 		}
 	} else if nested {
@@ -92,12 +96,15 @@ func run(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "用法: NestedUnpack.exe [--nested] <文件> [更多文件...]")
 		if fromExplorer {
-			notify("选区内没有可处理的文件。", true)
+			notifyExplorer("选区内没有可处理的文件。", true)
 		}
 		return 2
 	}
 	if nested {
-		return runNested(args, fromExplorer)
+		if fromExplorer {
+			return runNestedGUI(args)
+		}
+		return runNested(args)
 	}
 	var result batch
 	seen := make(map[string]bool)

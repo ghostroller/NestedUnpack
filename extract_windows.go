@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -33,7 +34,7 @@ func extractRAR(entry *zip.File, source string) (string, error) {
 	defer os.Remove(part.Name())
 	defer part.Close()
 
-	if err := copyMember(part, entry, nil); err != nil {
+	if err := copyMember(part, entry, nil, nil, nil); err != nil {
 		return "", err
 	}
 	var header [8]byte
@@ -54,21 +55,27 @@ func extractRAR(entry *zip.File, source string) (string, error) {
 }
 
 type progressWriter struct {
+	ctx     context.Context
 	file    *os.File
 	written uint64
 	observe func(uint64)
 }
 
 func (writer *progressWriter) Write(data []byte) (int, error) {
+	if writer.ctx != nil {
+		if err := writer.ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
 	n, err := writer.file.Write(data)
 	writer.written += uint64(n)
 	writer.observe(writer.written)
 	return n, err
 }
 
-func copyMember(output *os.File, entry *zip.File, observe func(uint64)) error {
+func copyMember(output *os.File, entry *zip.File, observe func(uint64), ctx context.Context, buffer []byte) error {
 	var destination io.Writer = output
-	meter := &progressWriter{file: output, observe: observe}
+	meter := &progressWriter{ctx: ctx, file: output, observe: observe}
 	if observe != nil {
 		destination = meter
 	}
@@ -91,7 +98,10 @@ func copyMember(output *os.File, entry *zip.File, observe func(uint64)) error {
 	}
 	defer reader.Close()
 	checksum := crc32.NewIEEE()
-	written, err := io.CopyBuffer(io.MultiWriter(destination, checksum), reader, make([]byte, 4<<20))
+	if buffer == nil {
+		buffer = make([]byte, 4<<20)
+	}
+	written, err := io.CopyBuffer(io.MultiWriter(destination, checksum), reader, buffer)
 	if err != nil {
 		return err
 	}
