@@ -17,6 +17,15 @@ type nestedEvent struct {
 	Index, Total, Depth, Percent                                  int
 	ArchiveIndex, ArchivesDiscovered, ArchivesCompleted           int
 	MaxDepth, Parts, FilesWritten                                 int
+	Structure                                                     *archiveStructure
+}
+
+type archiveStructure struct {
+	Name, Format, Status string
+	ID, ParentID         int
+	Volumes              []string
+	Files                int // Direct ordinary files, or -1 if unknown.
+	Children             []*archiveStructure
 }
 
 type passwordRequest struct {
@@ -187,14 +196,18 @@ func (session *unpackSession) unpackUsing7Zip(layer nestedEvent, dest, work stri
 
 func (session *unpackSession) unpack(item *nestedEvent, kind string) (string, error) {
 	item.ArchivesDiscovered = 1
+	root := nestedArchive{Path: item.Source, Kind: kind}
+	structure := describeArchive(root, "", 1, 0)
+	// Publish the tree with the result, after its nodes stop changing.
+	defer func() { item.Structure = structure }()
+	session.updateArchive(*item, structure)
 	work, err := os.MkdirTemp(filepath.Dir(item.Source), ".nestedunpack-nested-")
 	if err != nil {
-		return "", err
+		return "", session.stopArchive(*item, structure, err)
 	}
 	defer os.RemoveAll(work)
 
-	root := nestedArchive{Path: item.Source, Kind: kind}
-	result, err := session.unpackTree(item, work, root, 1)
+	result, err := session.unpackTree(item, work, root, structure, 1)
 	if err != nil {
 		return "", err
 	}
@@ -215,7 +228,53 @@ type unpackedDirectory struct {
 	files int
 }
 
-func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive nestedArchive, depth int) (unpackedDirectory, error) {
+func describeArchive(archive nestedArchive, containingDirectory string, id, parentID int) *archiveStructure {
+	memberName := func(path string) string {
+		if containingDirectory != "" {
+			if relative, err := filepath.Rel(containingDirectory, path); err == nil && filepath.IsLocal(relative) {
+				return relative
+			}
+		}
+		return filepath.Base(path)
+	}
+	node := &archiveStructure{
+		Name: memberName(archive.Path), Format: archive.Kind, Status: "pending",
+		ID: id, ParentID: parentID, Files: -1,
+	}
+	if archive.Kind == "7z 分卷" {
+		if base, _, ok := splitVolumeName(archive.Path); ok {
+			node.Name = memberName(base)
+		}
+		node.Volumes = make([]string, 0, len(archive.Parts))
+		for _, part := range archive.Parts {
+			node.Volumes = append(node.Volumes, memberName(part))
+		}
+	}
+	return node
+}
+
+func (session *unpackSession) updateArchive(event nestedEvent, node *archiveStructure) {
+	// The UI can handle this event on another thread while extraction continues.
+	snapshot := *node
+	snapshot.Children = nil
+	event.Kind, event.Structure = "structure", &snapshot
+	session.ui.Update(event)
+}
+
+func (session *unpackSession) stopArchive(event nestedEvent, node *archiveStructure, err error) error {
+	switch {
+	case session.ctx.Err() != nil:
+		node.Status = "canceled"
+	case errors.Is(err, errPasswordSkipped):
+		node.Status = "skipped"
+	default:
+		node.Status = "failed"
+	}
+	session.updateArchive(event, node)
+	return err
+}
+
+func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive nestedArchive, node *archiveStructure, depth int) (unpackedDirectory, error) {
 	var previous string
 	for ; depth <= 64; depth++ {
 		if err := session.ctx.Err(); err != nil {
@@ -226,10 +285,12 @@ func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive
 		layer := *item
 		layer.Archive, layer.Format, layer.Depth = archive.Path, archive.Kind, depth
 		layer.Parts = max(1, len(archive.Parts))
+		node.Status = "active"
+		session.updateArchive(layer, node)
 		session.stage(layer, "读取压缩包目录", -1)
 		dest, err := os.MkdirTemp(work, "layer-")
 		if err != nil {
-			return unpackedDirectory{}, layerError(layer, err)
+			return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, err))
 		}
 		progress := session.progress(layer, "解压当前压缩包")
 		if archive.Kind == "ZIP" {
@@ -239,31 +300,42 @@ func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive
 			err = session.unpackUsing7Zip(layer, dest, work, progress)
 		}
 		if err != nil {
-			return unpackedDirectory{}, layerError(layer, err)
+			return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, err))
 		}
 		session.stage(layer, "检查解出的文件并查找内层压缩包", -1)
 		files, err := extractedFiles(dest)
 		if err != nil {
-			return unpackedDirectory{}, layerError(layer, err)
+			return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, err))
 		}
 		if previous != "" {
 			if err := os.RemoveAll(previous); err != nil {
-				return unpackedDirectory{}, layerError(layer, fmt.Errorf("清理上一层暂存目录 · %w", err))
+				return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, fmt.Errorf("清理上一层暂存目录 · %w", err)))
 			}
 		}
 		item.ArchivesCompleted++
+		node.Status = "opened"
+		session.updateArchive(*item, node)
 		archives, err := findNestedArchives(files)
 		if err != nil {
 			return unpackedDirectory{}, layerError(layer, err)
 		}
-		item.ArchivesDiscovered += len(archives)
+		node.Files = len(files)
+		for _, child := range archives {
+			item.ArchivesDiscovered++
+			node.Children = append(node.Children, describeArchive(child, dest, item.ArchivesDiscovered, node.ID))
+			node.Files -= len(child.Parts)
+		}
+		session.updateArchive(*item, node)
+		for _, child := range node.Children {
+			session.updateArchive(*item, child)
+		}
 		if len(archives) == 1 && len(archives[0].Parts) == len(files) {
-			archive, previous = archives[0], dest
+			archive, node, previous = archives[0], node.Children[0], dest
 			continue
 		}
-		finalFiles := len(files)
-		for _, child := range archives {
-			result, err := session.unpackTree(item, work, child, depth+1)
+		finalFiles := node.Files
+		for index, child := range archives {
+			result, err := session.unpackTree(item, work, child, node.Children[index], depth+1)
 			if err != nil {
 				return unpackedDirectory{}, err
 			}
@@ -285,7 +357,7 @@ func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive
 					return unpackedDirectory{}, fmt.Errorf("清理已解开的暂存压缩包 · %w", err)
 				}
 			}
-			finalFiles += result.files - len(child.Parts)
+			finalFiles += result.files
 		}
 		return unpackedDirectory{path: dest, files: finalFiles}, nil
 	}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +65,28 @@ func TestRecursiveSplitArchiveWithDocument(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	volumeNames := make([]string, 0, len(volumes))
+	for _, volume := range volumes {
+		volumeNames = append(volumeNames, filepath.Join("10241", filepath.Base(volume)))
+	}
+	splitName := filepath.Join("10241", "10241.7z")
+	siblingName := filepath.Join("10241", "sibling.zip")
+	partial := &recursiveTestUI{skipPassword: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	summary := executeNested(ctx, []string{source}, partial)
+	cancel()
+	if summary.Skipped != 1 || partial.prompts != 1 || partial.result.Output != "" {
+		t.Fatalf("expected to skip at the encrypted split archive, got %+v: %+v", summary, partial.result)
+	}
+	checkRecursiveTestStructure(t, partial.result.Structure, &archiveStructure{
+		Name: filepath.Base(source), Format: "ZIP", Status: "opened", Files: 1,
+		Children: []*archiveStructure{
+			{Name: splitName, Format: "7z 分卷", Status: "skipped", Files: -1, Volumes: volumeNames},
+			{Name: siblingName, Format: "ZIP", Status: "pending", Files: -1},
+		},
+	})
+	checkRecursiveTestStructureUpdates(t, partial.events, []string{filepath.Base(source), splitName})
+
 	for _, wantPrompts := range []int{2, 0} {
 		ui := &recursiveTestUI{reply: passwordReply{Value: password, Remember: true}}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -77,8 +100,51 @@ func TestRecursiveSplitArchiveWithDocument(t *testing.T) {
 			t.Fatalf("password prompts = %d, want %d", ui.prompts, wantPrompts)
 		}
 		checkRecursiveTestEvents(t, ui.events, ui.result)
+		checkRecursiveTestStructure(t, ui.result.Structure, &archiveStructure{
+			Name: filepath.Base(source), Format: "ZIP", Status: "opened", Files: 1,
+			Children: []*archiveStructure{
+				{
+					Name: splitName, Format: "7z 分卷", Status: "opened", Files: 0, Volumes: volumeNames,
+					Children: []*archiveStructure{
+						{Name: "inner.zip", Format: "ZIP", Status: "opened", Files: 1},
+					},
+				},
+				{Name: siblingName, Format: "ZIP", Status: "opened", Files: 1},
+			},
+		})
+		checkRecursiveTestStructureUpdates(t, ui.events, []string{filepath.Base(source), splitName, "inner.zip", siblingName})
 		checkRecursiveTestOutput(t, ui.result.Output, epub, deepPayload)
 	}
+}
+
+func TestArchiveStructurePreservesFlattenedWrappers(t *testing.T) {
+	work := t.TempDir()
+	t.Setenv("LOCALAPPDATA", work)
+	leaf := makeRecursiveTestZip(t, map[string][]byte{"document.txt": []byte("payload")})
+	wrapper := makeRecursiveTestZip(t, map[string][]byte{
+		"left/same.zip":  leaf,
+		"right/same.zip": leaf,
+	})
+	path := filepath.Join(work, "outer.zip")
+	if err := os.WriteFile(path, makeRecursiveTestZip(t, map[string][]byte{"wrapper/inside.zip": wrapper}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ui := &recursiveTestUI{}
+	if summary := executeNested(context.Background(), []string{path}, ui); summary.Success != 1 {
+		t.Fatalf("failed to extract test archive: %+v (%s)", summary, ui.result.Message)
+	}
+	checkRecursiveTestStructure(t, ui.result.Structure, &archiveStructure{
+		Name: "outer.zip", Format: "ZIP", Status: "opened", Files: 0,
+		Children: []*archiveStructure{
+			{
+				Name: filepath.Join("wrapper", "inside.zip"), Format: "ZIP", Status: "opened", Files: 0,
+				Children: []*archiveStructure{
+					{Name: filepath.Join("left", "same.zip"), Format: "ZIP", Status: "opened", Files: 1},
+					{Name: filepath.Join("right", "same.zip"), Format: "ZIP", Status: "opened", Files: 1},
+				},
+			},
+		},
+	})
 }
 
 func TestNestedBatchFileResults(t *testing.T) {
@@ -112,7 +178,7 @@ func TestNestedBatchFileResults(t *testing.T) {
 			if event.Output == "" || event.FilesWritten != 0 || event.ArchivesCompleted != 1 {
 				t.Fatalf("unexpected empty ZIP result %+v", event)
 			}
-		} else if event.Output != "" || event.Message == "" || event.ArchivesCompleted != 0 {
+		} else if event.Output != "" || event.Message == "" || event.ArchivesCompleted != 0 || event.Structure != nil {
 			t.Fatalf("expected a reason and no output, got %+v", event)
 		}
 		index++
@@ -137,11 +203,12 @@ func TestNested7ZipVolumeGap(t *testing.T) {
 }
 
 type recursiveTestUI struct {
-	reply   passwordReply
-	prompts int
-	result  nestedEvent
-	stage   nestedEvent
-	events  []nestedEvent
+	reply        passwordReply
+	skipPassword bool
+	prompts      int
+	result       nestedEvent
+	stage        nestedEvent
+	events       []nestedEvent
 }
 
 func (ui *recursiveTestUI) Update(event nestedEvent) {
@@ -185,6 +252,9 @@ func checkRecursiveTestEvents(t *testing.T, events []nestedEvent, result nestedE
 
 func (ui *recursiveTestUI) RequestPassword(_ context.Context, request passwordRequest) (passwordReply, error) {
 	ui.prompts++
+	if ui.skipPassword {
+		return passwordReply{}, nil
+	}
 	switch {
 	case ui.prompts == 1 && !request.Retry:
 		return passwordReply{Value: "incorrect-manual-password", Remember: true}, nil
@@ -193,6 +263,61 @@ func (ui *recursiveTestUI) RequestPassword(_ context.Context, request passwordRe
 	default:
 		return passwordReply{}, fmt.Errorf("unexpected password retry")
 	}
+}
+
+func checkRecursiveTestStructure(t *testing.T, actual, expected *archiveStructure) {
+	t.Helper()
+	if actual == nil || actual.Name != expected.Name || actual.Format != expected.Format ||
+		actual.Status != expected.Status || actual.Files != expected.Files ||
+		!slices.Equal(actual.Volumes, expected.Volumes) || len(actual.Children) != len(expected.Children) {
+		t.Fatalf("archive structure node = %+v; want %+v", actual, expected)
+	}
+	for index, child := range actual.Children {
+		checkRecursiveTestStructure(t, child, expected.Children[index])
+	}
+}
+
+func checkRecursiveTestStructureUpdates(t *testing.T, events []nestedEvent, expectedActive []string) {
+	t.Helper()
+	var active []string
+	nodes := make(map[int]*archiveStructure)
+	for _, event := range events {
+		if event.Kind == "result" {
+			if !slices.Equal(active, expectedActive) {
+				t.Fatalf("live archive updates = %q; want %q before final result", active, expectedActive)
+			}
+			var checkLatest func(*archiveStructure)
+			checkLatest = func(node *archiveStructure) {
+				update := nodes[node.ID]
+				if update == nil || update.Name != node.Name || update.Status != node.Status ||
+					update.Files != node.Files || update.ParentID != node.ParentID || !slices.Equal(update.Volumes, node.Volumes) {
+					t.Fatalf("result node %+v was not already reflected in live update %+v", node, update)
+				}
+				for _, child := range node.Children {
+					checkLatest(child)
+				}
+			}
+			checkLatest(event.Structure)
+			return
+		}
+		if event.Kind != "structure" {
+			continue
+		}
+		node := event.Structure
+		if node == nil || node.ID <= 0 || len(node.Children) != 0 ||
+			(node.ParentID != 0 && nodes[node.ParentID] == nil) {
+			t.Fatalf("invalid live tree update: %+v", node)
+		}
+		if previous := nodes[node.ID]; previous != nil &&
+			(previous.Name != node.Name || previous.ParentID != node.ParentID) {
+			t.Fatalf("archive tree node changed identity: %+v then %+v", previous, node)
+		}
+		if node.Status == "active" {
+			active = append(active, node.Name)
+		}
+		nodes[node.ID] = node
+	}
+	t.Fatal("missing final result event")
 }
 
 func makeRecursiveTestZip(t *testing.T, members map[string][]byte) []byte {

@@ -16,6 +16,7 @@ const (
 	guiClassName = "NestedUnpackProgressWindow"
 
 	guiWMDestroy = 0x0002
+	guiWMRedraw  = 0x000b
 	guiWMClose   = 0x0010
 	guiWMCommand = 0x0111
 	guiWMInitDlg = 0x0110
@@ -36,7 +37,7 @@ const (
 	guiMainStyle     = 0x00cf0000 // WS_OVERLAPPEDWINDOW
 	guiKeepZOrder    = 0x0014     // SWP_NOZORDER | SWP_NOACTIVATE
 	guiMinimumWidth  = 560
-	guiMinimumHeight = 434
+	guiMinimumHeight = 476
 
 	guiOK       = 1
 	guiCancel   = 2
@@ -46,15 +47,29 @@ const (
 	guiResults  = 104
 	guiOpen     = 105
 
-	guiLBAddString   = 0x0180
-	guiLBSetCurSel   = 0x0186
-	guiLBGetCurSel   = 0x0188
-	guiLBSelChange   = 1
-	guiLBDoubleClick = 2
+	guiLBAddString    = 0x0180
+	guiLBInsertString = 0x0181
+	guiLBDeleteString = 0x0182
+	guiLBSetCurSel    = 0x0186
+	guiLBGetCurSel    = 0x0188
+	guiLBGetTopIndex  = 0x018e
+	guiLBSetTopIndex  = 0x0197
+	guiLBSelChange    = 1
+	guiLBDoubleClick  = 2
 
 	guiPBSetPos     = 0x0402
 	guiPBSetMarquee = 0x040a
 	guiPBSMarquee   = 0x0008
+
+	guiTVDeleteItem = 0x1101
+	guiTVExpand     = 0x1102
+	guiTVSetIndent  = 0x1107
+	guiTVInsertItem = 0x1132 // TVM_INSERTITEMW
+	guiTVSetItem    = 0x113f // TVM_SETITEMW
+	guiTVIFText     = 0x0001
+	guiTVEExpand    = 0x0002
+	guiTVIFirst     = ^uintptr(0xfffe)
+	guiTVSStyle     = 0x17 // TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_DISABLEDRAGDROP
 )
 
 type guiProgressMode int
@@ -95,6 +110,7 @@ var (
 	guiGetWindowTextLen  = guiUser32.NewProc("GetWindowTextLengthW")
 	guiIsDialogMessage   = guiUser32.NewProc("IsDialogMessageW")
 	guiIsZoomed          = guiUser32.NewProc("IsZoomed")
+	guiInvalidateRect    = guiUser32.NewProc("InvalidateRect")
 	guiLoadCursor        = guiUser32.NewProc("LoadCursorW")
 	guiMessageBox        = guiUser32.NewProc("MessageBoxW")
 	guiMonitorFromRect   = guiUser32.NewProc("MonitorFromRect")
@@ -164,6 +180,32 @@ type guiClass struct {
 	MenuName, ClassName     *uint16
 }
 
+// TVITEMEXW is the largest member of the TVINSERTSTRUCTW union.
+type guiTreeItem struct {
+	Mask                               uint32
+	Item                               uintptr
+	State, StateMask                   uint32
+	Text                               *uint16
+	TextCapacity, Image, SelectedImage int32
+	Children                           int32
+	Param                              uintptr
+	Integral                           int32
+	StateEx                            uint32
+	Window                             uintptr
+	ExpandedImage, Reserved            int32
+}
+
+type guiTreeInsert struct {
+	Parent, After uintptr
+	Item          guiTreeItem
+}
+
+type guiResultEntry struct {
+	event nestedEvent
+	live  []*archiveStructure
+	nodes map[int]int
+}
+
 type nativeNestedUI struct {
 	jobCtx                        context.Context
 	windowCtx                     context.Context
@@ -173,13 +215,19 @@ type nativeNestedUI struct {
 	batch, source, layer, archive uintptr
 	stage, progress, marquee      uintptr
 	section, list, details        uintptr
+	treeTitle, tree, treeEmpty    uintptr
 	open, close                   uintptr
 	dpi                           uint32
 	fonts                         [3]uintptr
 	processed, total              int
 	progressMode                  guiProgressMode
 	layerText, archiveText        string
-	results                       []nestedEvent
+	results                       []guiResultEntry
+	activeRow, treeRow            int
+	followResults                 bool
+	treeItems                     map[int]uintptr
+	treeTail                      map[uintptr]uintptr
+	treeExpanded                  map[uintptr]bool
 	done, closing                 bool
 	exitCode                      int
 	password                      passwordReply
@@ -248,14 +296,19 @@ func runNestedGUI(paths []string) int {
 
 func (ui *nativeNestedUI) create(total int) error {
 	ui.total = total
+	ui.activeRow, ui.treeRow = -1, -1
+	ui.followResults = true
+	ui.treeItems = make(map[int]uintptr)
+	ui.treeTail = make(map[uintptr]uintptr)
+	ui.treeExpanded = make(map[uintptr]bool)
 	instance, _, err := guiGetModuleHandle.Call(0)
 	if instance == 0 {
 		return err
 	}
 	ui.instance = instance
-	controls := [2]uint32{8, 0x20} // INITCOMMONCONTROLSEX, ICC_PROGRESS_CLASS
+	controls := [2]uint32{8, 0x22} // INITCOMMONCONTROLSEX, ICC_PROGRESS_CLASS | ICC_TREEVIEW_CLASSES
 	if initialized, _, err := guiInitControls.Call(uintptr(unsafe.Pointer(&controls))); initialized == 0 {
-		return fmt.Errorf("初始化进度条控件：%w", err)
+		return fmt.Errorf("初始化窗口控件：%w", err)
 	}
 	cursor, _, _ := guiLoadCursor.Call(0, 32512) // IDC_ARROW
 	className := guiString(guiClassName)
@@ -290,7 +343,10 @@ func (ui *nativeNestedUI) create(total int) error {
 		{&ui.marquee, "msctls_progress32", "", guiPBSMarquee, 0, 0, true},
 		{&ui.section, "STATIC", "处理结果", 0, 0, 0, false},
 		{&ui.list, "LISTBOX", "", guiWSBorder | guiWSVScroll | guiWSTabStop | 0x0101, 0, guiResults, false}, // LBS_NOTIFY | LBS_NOINTEGRALHEIGHT
-		{&ui.details, "EDIT", "", guiWSBorder | guiWSVScroll | guiWSTabStop | 0x844, 0, 0, false},           // ES_READONLY | ES_AUTOVSCROLL | ES_MULTILINE
+		{&ui.treeTitle, "STATIC", "压缩包结构", 0, 0, 0, false},
+		{&ui.tree, "SysTreeView32", "", guiWSBorder | guiWSTabStop | guiTVSStyle, 0, 0, true},
+		{&ui.treeEmpty, "STATIC", "等待查看压缩包结构", guiWSBorder | 0x0201, 0, 0, false},                 // SS_CENTER | SS_CENTERIMAGE
+		{&ui.details, "EDIT", "", guiWSBorder | guiWSVScroll | guiWSTabStop | 0x844, 0, 0, false}, // ES_READONLY | ES_AUTOVSCROLL | ES_MULTILINE
 		{&ui.open, "BUTTON", "打开解压目录", guiWSTabStop, 0, guiOpen, false},
 		{&ui.close, "BUTTON", "取消解压", guiWSTabStop, 0, guiClose, false},
 	}
@@ -311,7 +367,7 @@ func (ui *nativeNestedUI) create(total int) error {
 	guiEnableWindow.Call(ui.open, 0)
 	guiSendMessage.Call(ui.details, 0x00c5, 0x7ffffffe, 0) // EM_SETLIMITTEXT
 	ui.applyFonts()
-	w, h := guiFrameSize(758, 525, ui.dpi)
+	w, h := guiFrameSize(850, 620, ui.dpi)
 	w = min(w, work.Right-work.Left)
 	h = min(h, work.Bottom-work.Top)
 	x, y := work.Left+(work.Right-work.Left-w)/2, work.Top+(work.Bottom-work.Top-h)/2
@@ -381,8 +437,8 @@ func (ui *nativeNestedUI) applyFonts() {
 	stock, _, _ := guiGetStockObject.Call(17) // DEFAULT_GUI_FONT
 	for index, controls := range [3][]uintptr{
 		{ui.batch},
-		{ui.source, ui.layer, ui.stage, ui.list, ui.details, ui.open, ui.close},
-		{ui.archive, ui.section},
+		{ui.source, ui.layer, ui.stage, ui.list, ui.tree, ui.treeEmpty, ui.details, ui.open, ui.close},
+		{ui.archive, ui.section, ui.treeTitle},
 	} {
 		font := ui.fonts[index]
 		if font == 0 {
@@ -392,6 +448,7 @@ func (ui *nativeNestedUI) applyFonts() {
 			guiSendMessage.Call(control, 0x0030, font, 1) // WM_SETFONT
 		}
 	}
+	guiSendMessage.Call(ui.tree, guiTVSetIndent, uintptr(guiScale(18, ui.dpi)), 0)
 	for _, font := range previous {
 		if font != 0 {
 			guiDeleteObject.Call(font)
@@ -409,10 +466,18 @@ func (ui *nativeNestedUI) layout() {
 	width := max(0, client.Right-2*margin)
 	buttonWidth, buttonHeight := scale(112), scale(36)
 	buttonTop := max(0, client.Bottom-scale(22)-buttonHeight)
-	resultsTop := scale(245)
+	resultsHeading := scale(220)
+	if ui.done {
+		resultsHeading = scale(105)
+	}
+	resultsTop := resultsHeading + scale(25)
 	resultsHeight := max(0, buttonTop-resultsTop-scale(16))
-	listWidth := width * 35 / 100
+	listWidth := width * 34 / 100
 	gap := scale(12)
+	treeLeft := margin + listWidth + gap
+	treeWidth := max(0, width-listWidth-gap)
+	panelGap := min(gap, resultsHeight)
+	treeHeight := (resultsHeight - panelGap) * 62 / 100
 	position := func(handle uintptr, x, y, width, height int32) {
 		guiSetWindowPos.Call(handle, 0, uintptr(x), uintptr(y), uintptr(width), uintptr(height), guiKeepZOrder)
 	}
@@ -423,9 +488,12 @@ func (ui *nativeNestedUI) layout() {
 	position(ui.stage, margin, scale(161), width, scale(23))
 	position(ui.progress, margin, scale(188), width, scale(13))
 	position(ui.marquee, margin, scale(188), width, scale(13))
-	position(ui.section, margin, scale(220), width, scale(21))
+	position(ui.section, margin, resultsHeading, listWidth, scale(21))
+	position(ui.treeTitle, treeLeft, resultsHeading, treeWidth, scale(21))
 	position(ui.list, margin, resultsTop, listWidth, resultsHeight)
-	position(ui.details, margin+listWidth+gap, resultsTop, max(0, width-listWidth-gap), resultsHeight)
+	position(ui.tree, treeLeft, resultsTop, treeWidth, treeHeight)
+	position(ui.treeEmpty, treeLeft, resultsTop, treeWidth, treeHeight)
+	position(ui.details, treeLeft, resultsTop+treeHeight+panelGap, treeWidth, resultsHeight-treeHeight-panelGap)
 	closeLeft := max(margin, client.Right-margin-buttonWidth)
 	openWidth := scale(140)
 	position(ui.open, max(margin, closeLeft-gap-openWidth), buttonTop, openWidth, buttonHeight)
@@ -448,14 +516,14 @@ func (ui *nativeNestedUI) dispatch(ctx context.Context, action func()) error {
 
 func (ui *nativeNestedUI) Update(event nestedEvent) {
 	ctx := ui.jobCtx
-	if event.Kind == "result" || event.Kind == "warning" {
+	if event.Kind == "structure" || event.Kind == "result" || event.Kind == "warning" {
 		ctx = ui.windowCtx
 	}
 	_ = ui.dispatch(ctx, func() { ui.render(event) })
 }
 
 func (ui *nativeNestedUI) render(event nestedEvent) {
-	if ui.closing && event.Kind != "result" && event.Kind != "warning" {
+	if ui.closing && event.Kind != "structure" && event.Kind != "result" && event.Kind != "warning" {
 		return
 	}
 	switch event.Kind {
@@ -465,6 +533,7 @@ func (ui *nativeNestedUI) render(event nestedEvent) {
 		guiText(ui.source, fmt.Sprintf("当前文件 %d / %d  ·  %s", event.Index, event.Total, filepath.Base(event.Source)))
 		ui.showLayer("", "")
 		ui.showStage("正在识别压缩格式", guiProgressBusy, 0)
+		ui.activeRow = ui.addResult(event)
 	case "stage", "progress":
 		layer, archive := guiLayerDescription(event)
 		ui.showLayer(layer, archive)
@@ -475,12 +544,14 @@ func (ui *nativeNestedUI) render(event nestedEvent) {
 			mode = guiProgressMeasured
 		}
 		ui.showStage(event.Stage, mode, event.Percent)
+	case "structure":
+		ui.updateStructure(event)
 	case "result":
 		if event.Status != "canceled" {
 			ui.processed++
 		}
 		ui.updateBatch()
-		ui.addResult(event)
+		ui.completeResult(event)
 		if !ui.closing {
 			ui.showLayer("", "")
 			ui.showStage("", guiProgressHidden, 0)
@@ -558,6 +629,9 @@ func (ui *nativeNestedUI) updateBatch() {
 }
 
 func guiResultStatus(event nestedEvent) string {
+	if event.Kind == "source" {
+		return "处理中"
+	}
 	if event.Kind == "warning" {
 		return "提醒"
 	}
@@ -578,7 +652,9 @@ func guiResultDetails(event nestedEvent) string {
 	if event.Source != "" {
 		lines = append(lines, event.Source, "")
 	}
-	if event.Output != "" {
+	if event.Kind == "source" {
+		lines = append(lines, "正在处理，压缩包结构会随解压更新。")
+	} else if event.Output != "" {
 		lines = append(lines, "解压目录", event.Output, "",
 			fmt.Sprintf("写出 %d 个文件 · 解开 %d 个压缩包 · 最深 %d 层",
 				event.FilesWritten, event.ArchivesCompleted, event.MaxDepth))
@@ -593,8 +669,7 @@ func guiResultDetails(event nestedEvent) string {
 	return strings.ReplaceAll(text, "\n", "\r\n")
 }
 
-func (ui *nativeNestedUI) addResult(event nestedEvent) {
-	current, _, _ := guiSendMessage.Call(ui.list, guiLBGetCurSel, 0, 0)
+func guiResultLabel(event nestedEvent) string {
 	label := guiResultStatus(event)
 	if event.Source != "" {
 		label += "  ·  " + filepath.Base(event.Source)
@@ -602,26 +677,101 @@ func (ui *nativeNestedUI) addResult(event nestedEvent) {
 		firstLine, _, _ := strings.Cut(event.Message, "\n")
 		label += "  ·  " + strings.TrimSpace(firstLine)
 	}
-	index, _, _ := guiSendMessage.Call(ui.list, guiLBAddString, 0, uintptr(unsafe.Pointer(guiString(label))))
+	return label
+}
+
+func (ui *nativeNestedUI) addResult(event nestedEvent) int {
+	current := ui.selectedRow()
+	index, _, _ := guiSendMessage.Call(ui.list, guiLBAddString, 0, uintptr(unsafe.Pointer(guiString(guiResultLabel(event)))))
 	if int(index) < 0 {
+		return -1
+	}
+	ui.results = append(ui.results, guiResultEntry{event: event})
+	if current < 0 || (event.Kind == "source" && ui.followResults) {
+		guiSendMessage.Call(ui.list, guiLBSetCurSel, index, 0)
+		ui.showSelectedResult()
+	}
+	return int(index)
+}
+
+func (ui *nativeNestedUI) activeResult(event nestedEvent) int {
+	if ui.activeRow >= 0 && ui.results[ui.activeRow].event.Index == event.Index {
+		return ui.activeRow
+	}
+	return -1
+}
+
+func (ui *nativeNestedUI) updateStructure(event nestedEvent) {
+	row, node := ui.activeResult(event), event.Structure
+	if row < 0 || node == nil {
 		return
 	}
-	ui.results = append(ui.results, event)
-	if int(current) < 0 || int(current)+1 == int(index) {
-		guiSendMessage.Call(ui.list, guiLBSetCurSel, index, 0)
+	entry := &ui.results[row]
+	if entry.nodes == nil {
+		entry.nodes = make(map[int]int)
+	}
+	if index, ok := entry.nodes[node.ID]; ok {
+		entry.live[index] = node
+	} else {
+		entry.nodes[node.ID] = len(entry.live)
+		entry.live = append(entry.live, node)
+	}
+	if ui.treeRow == row {
+		ui.updateArchiveTree(node, true, true)
+	}
+}
+
+func (ui *nativeNestedUI) completeResult(event nestedEvent) {
+	row := ui.activeResult(event)
+	if row < 0 {
+		ui.addResult(event)
+		return
+	}
+	ui.activeRow = -1
+	entry := &ui.results[row]
+	entry.event = event
+	if ui.treeRow == row {
+		if len(ui.treeItems) == 0 || event.Structure == nil {
+			ui.treeRow = -1
+		} else {
+			// The final tree reconciles every node without replacing native handles.
+			ui.insertArchiveBranch(event.Structure, entry)
+		}
+	}
+	entry.live, entry.nodes = nil, nil
+
+	selected := ui.selectedRow()
+	topIndex, _, _ := guiSendMessage.Call(ui.list, guiLBGetTopIndex, 0, 0)
+	guiSendMessage.Call(ui.list, guiWMRedraw, 0, 0)
+	guiSendMessage.Call(ui.list, guiLBDeleteString, uintptr(row), 0)
+	guiSendMessage.Call(ui.list, guiLBInsertString, uintptr(row), uintptr(unsafe.Pointer(guiString(guiResultLabel(event)))))
+	guiSendMessage.Call(ui.list, guiLBSetCurSel, uintptr(selected), 0)
+	guiSendMessage.Call(ui.list, guiLBSetTopIndex, topIndex, 0)
+	guiSendMessage.Call(ui.list, guiWMRedraw, 1, 0)
+	guiInvalidateRect.Call(ui.list, 0, 1)
+	if selected == row {
 		ui.showSelectedResult()
 	}
 }
 
-func (ui *nativeNestedUI) selectedResult() (nestedEvent, bool) {
+func (ui *nativeNestedUI) selectedRow() int {
 	current, _, _ := guiSendMessage.Call(ui.list, guiLBGetCurSel, 0, 0)
 	if current >= uintptr(len(ui.results)) {
+		return -1
+	}
+	return int(current)
+}
+
+func (ui *nativeNestedUI) selectedResult() (nestedEvent, bool) {
+	row := ui.selectedRow()
+	if row < 0 {
 		return nestedEvent{}, false
 	}
-	return ui.results[current], true
+	return ui.results[row].event, true
 }
 
 func (ui *nativeNestedUI) showSelectedResult() {
+	ui.showResultTree(ui.selectedRow())
 	event, selected := ui.selectedResult()
 	if !selected {
 		guiText(ui.details, "")
@@ -636,6 +786,144 @@ func (ui *nativeNestedUI) showSelectedResult() {
 		enabled = 1
 	}
 	guiEnableWindow.Call(ui.open, enabled)
+}
+
+func (ui *nativeNestedUI) showResultTree(row int) {
+	if ui.treeRow == row {
+		return
+	}
+	ui.treeRow = row
+	guiSendMessage.Call(ui.tree, guiTVDeleteItem, 0, 0)
+	clear(ui.treeItems)
+	clear(ui.treeTail)
+	clear(ui.treeExpanded)
+	empty := "暂无压缩包结构"
+	if row >= 0 {
+		entry := &ui.results[row]
+		if entry.event.Kind == "source" {
+			for _, node := range entry.live {
+				ui.updateArchiveTree(node, true, true)
+			}
+			empty = "等待识别压缩包"
+		} else if root := entry.event.Structure; root != nil {
+			ui.insertArchiveBranch(root, nil)
+			for node, depth := root, 0; node != nil && depth < 3; depth++ {
+				ui.expandArchiveTree(ui.treeItems[node.ID])
+				if len(node.Children) != 1 {
+					break
+				}
+				node = node.Children[0]
+			}
+		}
+	}
+	if len(ui.treeItems) == 0 {
+		guiShowWindow.Call(ui.tree, 0) // SW_HIDE
+		guiText(ui.treeEmpty, empty)
+		guiShowWindow.Call(ui.treeEmpty, 4) // SW_SHOWNOACTIVATE
+	}
+}
+
+func (ui *nativeNestedUI) insertArchiveBranch(node *archiveStructure, previous *guiResultEntry) {
+	changed := true
+	if previous != nil && ui.treeItems[node.ID] != 0 {
+		if index, ok := previous.nodes[node.ID]; ok {
+			changed = guiArchiveTreeLabel(previous.live[index], true) != guiArchiveTreeLabel(node, false)
+		}
+	}
+	if changed {
+		ui.updateArchiveTree(node, false, false)
+	}
+	for _, child := range node.Children {
+		ui.insertArchiveBranch(child, previous)
+	}
+}
+
+func guiArchiveTreeLabel(node *archiveStructure, running bool) string {
+	label := node.Name + " · " + node.Format
+	if len(node.Volumes) > 0 {
+		label += fmt.Sprintf(" · %d 个分卷", len(node.Volumes))
+	}
+	switch node.Status {
+	case "active":
+		label += " · 正在处理"
+	case "opened":
+		label += " · 已解开"
+		if node.Files > 0 {
+			label += fmt.Sprintf(" · 本层 %d 个普通文件", node.Files)
+		}
+	case "failed":
+		label += " · 失败"
+	case "skipped":
+		label += " · 跳过"
+	case "canceled":
+		label += " · 取消"
+	case "pending":
+		if running {
+			label += " · 待处理"
+		} else {
+			label += " · 未处理"
+		}
+	}
+	return label
+}
+
+func (ui *nativeNestedUI) updateArchiveTree(node *archiveStructure, running, expandParent bool) {
+	label := guiArchiveTreeLabel(node, running)
+	if item := ui.treeItems[node.ID]; item != 0 {
+		ui.setArchiveTreeText(item, label)
+		return
+	}
+	parent := ui.treeItems[node.ParentID]
+	if node.ParentID != 0 && parent == 0 {
+		return
+	}
+	item := ui.insertTreeItem(parent, label)
+	if item == 0 {
+		return
+	}
+	ui.treeItems[node.ID] = item
+	for _, volume := range node.Volumes {
+		ui.insertTreeItem(item, filepath.Base(volume))
+	}
+	if parent == 0 {
+		guiShowWindow.Call(ui.treeEmpty, 0)
+		guiShowWindow.Call(ui.tree, 4)
+	} else if expandParent && !ui.treeExpanded[parent] {
+		ui.expandArchiveTree(parent)
+	}
+}
+
+func (ui *nativeNestedUI) insertTreeItem(parent uintptr, label string) uintptr {
+	after := ui.treeTail[parent]
+	if after == 0 {
+		after = guiTVIFirst
+	}
+	insert := guiTreeInsert{
+		Parent: parent,
+		After:  after,
+		Item:   guiTreeItem{Mask: guiTVIFText, Text: guiString(label)},
+	}
+	item, _, _ := guiSendMessage.Call(ui.tree, guiTVInsertItem, 0, uintptr(unsafe.Pointer(&insert)))
+	runtime.KeepAlive(insert.Item.Text)
+	if item != 0 {
+		ui.treeTail[parent] = item
+	}
+	return item
+}
+
+func (ui *nativeNestedUI) setArchiveTreeText(item uintptr, label string) {
+	if item != 0 {
+		value := guiTreeItem{Mask: guiTVIFText, Item: item, Text: guiString(label)}
+		guiSendMessage.Call(ui.tree, guiTVSetItem, 0, uintptr(unsafe.Pointer(&value)))
+		runtime.KeepAlive(value.Text)
+	}
+}
+
+func (ui *nativeNestedUI) expandArchiveTree(item uintptr) {
+	if item != 0 {
+		guiSendMessage.Call(ui.tree, guiTVExpand, guiTVEExpand, item)
+		ui.treeExpanded[item] = true
+	}
 }
 
 func (ui *nativeNestedUI) openSelectedResult() {
@@ -667,6 +955,10 @@ func (ui *nativeNestedUI) finish(summary batchSummary) {
 	guiText(ui.source, fmt.Sprintf("%s  ·  成功 %d  ·  跳过 %d  ·  失败 %d", status, summary.Success, summary.Skipped, summary.Failed))
 	ui.showLayer("", "")
 	ui.showStage("", guiProgressHidden, 0)
+	for _, control := range []uintptr{ui.layer, ui.archive, ui.stage} {
+		guiShowWindow.Call(control, 0) // SW_HIDE
+	}
+	ui.layout()
 	guiText(ui.close, "关闭")
 	guiSendMessage.Call(ui.close, 0x00f4, 1, 1) // BM_SETSTYLE, BS_DEFPUSHBUTTON
 	guiEnableWindow.Call(ui.close, 1)
@@ -711,9 +1003,9 @@ func guiWndProc(window, message, wParam, lParam uintptr) uintptr {
 			return 0
 		case guiWMColor:
 			if lParam == ui.batch || lParam == ui.source || lParam == ui.layer || lParam == ui.archive ||
-				lParam == ui.stage || lParam == ui.section || lParam == ui.details {
+				lParam == ui.stage || lParam == ui.section || lParam == ui.treeTitle || lParam == ui.treeEmpty || lParam == ui.details {
 				color := uintptr(8) // COLOR_WINDOWTEXT
-				if lParam == ui.stage {
+				if lParam == ui.stage || lParam == ui.treeEmpty {
 					color = 17 // COLOR_GRAYTEXT
 				}
 				text, _, _ := guiGetSysColor.Call(color)
@@ -734,6 +1026,7 @@ func guiWndProc(window, message, wParam, lParam uintptr) uintptr {
 			id := uint16(wParam)
 			code := uint16(wParam >> 16)
 			if id == guiResults && code == guiLBSelChange {
+				ui.followResults = ui.activeRow >= 0 && ui.selectedRow() == ui.activeRow
 				ui.showSelectedResult()
 				return 0
 			}
