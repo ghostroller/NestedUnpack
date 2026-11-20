@@ -97,7 +97,7 @@ pub(crate) fn extract(
     destination: &Path,
     control: &mut dyn Control,
 ) -> Result<(), ExtractError> {
-    let source = wide_path(source)?;
+    let source = archive_path(source)?;
     let mut password: Option<Zeroizing<String>> = None;
     loop {
         let attempt = tempfile::tempdir_in(destination)?;
@@ -142,7 +142,7 @@ pub(crate) fn extract(
 }
 
 fn pass(
-    source: &[rar::WCHAR],
+    source: &ArchivePath,
     destination: &Path,
     state: &RefCell<State<'_>>,
     extract: bool,
@@ -153,7 +153,16 @@ fn pass(
         rar::RAR_OM_LIST
     };
     let mut opening: OpenData = unsafe { std::mem::zeroed() };
-    opening.name_wide = source.as_ptr();
+    // On Linux, UnRAR can round-trip the byte path through its locale-aware
+    // filename conversion, including bytes outside the current C locale.
+    #[cfg(target_os = "linux")]
+    {
+        opening.name = source.as_ptr();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        opening.name_wide = source.as_ptr();
+    }
     opening.mode = mode;
     opening.callback = Some(callback);
     opening.user_data = std::ptr::from_ref(state).expose_provenance() as isize;
@@ -326,7 +335,21 @@ fn copy_password<T: Copy + Default + PartialEq>(
     Ok(())
 }
 
-fn wide_path(path: &Path) -> Result<Vec<rar::WCHAR>, ExtractError> {
+#[cfg(target_os = "linux")]
+type ArchivePath = std::ffi::CString;
+#[cfg(not(target_os = "linux"))]
+type ArchivePath = Vec<rar::WCHAR>;
+
+#[cfg(target_os = "linux")]
+fn archive_path(path: &Path) -> Result<ArchivePath, ExtractError> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::path::absolute(path)?;
+    std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| invalid(EngineKey::NulRarPath))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn archive_path(path: &Path) -> Result<ArchivePath, ExtractError> {
     let path = std::path::absolute(path)?;
     #[cfg(windows)]
     let units = {

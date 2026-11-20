@@ -35,9 +35,17 @@ ZIP、7z 和 UnRAR 解码器随 `bin\NestedUnpack.exe` 构建，目标机器无�
 推送版本标签后，从该标签手动运行发布工作流。
 
 ```powershell
-gh workflow run release.yml --ref v0.1.0
+gh workflow run release.yml --ref v0.1.1
 ```
 
-工作流用 Rust 1.99.0 测试和构建 Windows x64 版本，并发布 `NestedUnpack-windows-x64.zip`。ZIP 包含可独立运行的 EXE 和两份许可文件。从分支运行同一个工作流时，可在 Actions 下载构建产物。 [发布工作流](.github/workflows/release.yml)
+工作流用 Rust 1.99.0 原生编译和测试下表中的版本。Release 提供独立的可执行文件、`LICENSE` 和 `THIRD-PARTY-NOTICES.txt`。从分支运行同一工作流时，可在 Actions 下载构建产物。 [发布工作流](.github/workflows/release.yml)
 
-NestedUnpack 使用 Rust 和 egui/eframe 的 glow 后端，任务表使用 egui Extras 的 TableBuilder，图标来自 Phosphor。解压流程与窗口、文件关联和密码存储互相独立。macOS 和 Linux 的密码存储接入系统钥匙串或 Secret Service。当前发布与完整验证以 Windows x64 为准，资源管理器右键菜单仅在 Windows 提供。 [egui Extras](https://docs.rs/egui_extras/0.36.2/egui_extras/struct.TableBuilder.html) · [Phosphor Icons](https://phosphoricons.com/)
+| 验证平台 | 可执行文件 |
+| --- | --- |
+| Windows x64 | `NestedUnpack.exe` |
+| Ubuntu 24.04 x64 | `NestedUnpack-linux-x64` |
+| macOS 15 Apple Silicon | `NestedUnpack-macos-arm64` |
+
+在 Linux 和 macOS 上，下载后在终端执行 `chmod +x 文件名`，再用 `./文件名` 启动。
+
+NestedUnpack 使用 Rust 和 egui/eframe 的 glow 后端，任务表使用 egui Extras 的 TableBuilder，图标来自 Phosphor。解压流程与窗口、文件关联和密码存储互相独立。macOS 和 Linux 的密码存储接入系统钥匙串或 Secret Service。资源管理器右键菜单仅在 Windows 提供。 [egui Extras](https://docs.rs/egui_extras/0.36.2/egui_extras/struct.TableBuilder.html) · [Phosphor Icons](https://phosphoricons.com/)

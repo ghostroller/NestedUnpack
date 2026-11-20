@@ -65,7 +65,7 @@ catalog! {
         RarExceedsDeclaredSize => ("RAR 文件展开长度超出声明值", "Extracted RAR file exceeds its declared size"),
         MissingRarVolume => ("缺少 RAR 分卷", "Missing RAR volume"),
         InvalidRarPassword => ("RAR 密码超出允许长度或包含空字符", "RAR password is too long or contains a null character"),
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         NonUnicodeRarPath => ("RAR 路径不是有效的 Unicode", "RAR path is not valid Unicode"),
         NulRarPath => ("RAR 路径包含空字符", "RAR path contains a null character"),
         InvalidRarFilenameLength => ("RAR 文件名为空或超出长度限制", "RAR file name is empty or too long"),
