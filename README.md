@@ -1,24 +1,18 @@
 # NestedUnpack
 
-NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z、7z 分卷，以及拼接在 MP4 后面的 ZIP 或 ZIP64。它会递归解开识别出的压缩包，并把同一组 7z 分卷当作一个包处理。只有一个内层包时会直接展开，有其他文件时会把内层包解压到它旁边的子目录，并保留 EPUB 等原有文件。最终结果写入源文件旁的 `文件名-解压` 文件夹。同名目录会自动加编号。
+NestedUnpack 是一个批量解压工具，支持 ZIP、ZIP64、RAR、7z、7z 分卷，以及拼接在 MP4 后面的 ZIP 或 ZIP64。它会逐层解开识别出的压缩包。单个内层包会直接展开。若还有其他文件，内层包会解压到同级子目录，原有文件会保留。结果写到源文件旁的 `文件名-解压` 目录，遇到同名目录会递增编号。
 
-## 使用
+## Windows 用法
 
-在资源管理器中选中一个或多个文件，拖到 `NestedUnpack.exe` 图标上即可打开解压窗口。拖入任意一个 7z 分卷时，程序会从同一目录找齐其他分卷。一次拖入同组的多个分卷只处理一次。
+- 双击 `NestedUnpack.exe` 打开工作台。点击 **选择文件** 或把文件拖入窗口即可解压。
+- 把一个或多个文件拖到 EXE 图标上，可直接打开工作台并处理这些文件。拖入任意一个 7z 分卷即可自动查找同目录的其余分卷，同组只处理一次。
+- 打开 **右键菜单**，为当前用户注册 **解开嵌套压缩包**。Windows 11 可从 **显示更多选项** 找到该命令。移动 EXE 后，在新位置重新注册即可更新菜单指向。
+- 打开 **密码簿** 可添加、查看或删除条目。程序会优先尝试本批次验证过的密码和密码簿中的密码。手动输入时，可以选择在密码验证成功后保存。原有 Windows 密码簿继续使用同一个 DPAPI 文件 `%LOCALAPPDATA%\NestedUnpack\passwords.dpapi`。
+- 任务列表显示每个源文件的状态。选中任务可查看嵌套包、分卷、各层状态和输出目录。界面默认使用系统主题，可手动切换浅色和深色。
 
-双击 `NestedUnpack.exe` 打开管理窗口。通过 **管理密码簿** 可以添加、查看或删除保存的密码。选择 **注册到当前位置** 后，便可在资源管理器里选中一个或多个 `.zip`、`.zipx`、`.mp4`、`.rar`、`.7z` 或 `.7z.001` 文件，通过 **显示更多选项 → 解开嵌套压缩包** 启动批量解压。
+### 命令行
 
-菜单注册作用于当前 Windows 用户。移动或重命名程序后，在新位置打开程序并再次选择 **注册到当前位置** 即可更新菜单。选择 **移除** 可撤销注册。
-
-解压窗口可调整大小，管理窗口、解压窗口和密码框都随所在屏幕的显示缩放调整。解压窗口分别显示批次已处理的源文件数，以及当前压缩包的层数、名称和解压进度。内层压缩包会在解开外层后逐步发现，窗口会更新已发现和已解开的数量。每个源文件都有一条结果，成功时显示输出目录、最终文件数、解开的压缩包数和最深层数，跳过或失败时显示原因。
-
-从结果列表选中源文件即可查看其压缩包结构。可展开的树会保留原始嵌套层级和包内相对路径，同一组分卷放在一个节点下。每发现、开始或解开一个压缩包，结果树都会更新。跳过或失败的项目仍可查看已经发现的结构。
-
-遇到加密层时会先尝试本批次已验证的密码和密码簿里的密码，再弹出密码框。选择 **跳过当前文件** 可继续处理批次中的其他文件。
-
-勾选 **密码正确时保存到密码簿** 后，验证通过的密码会保存供后续解压使用。密码簿由 Windows DPAPI 加密，绑定当前 Windows 用户，保存在 `%LOCALAPPDATA%\NestedUnpack\passwords.dpapi`。PowerShell 启动的解压也会读取密码簿，手动输入的密码在本批次内复用。
-
-从 PowerShell 直接传入文件路径也会打开解压窗口。使用 `--nested` 可在终端递归解压，使用 `--outer` 可只提取外层 ZIP 内的 RAR。
+直接传文件路径会打开工作台。使用 `--nested` 可在终端递归解压，使用 `--outer` 可只提取外层 ZIP 内的 RAR。
 
 ```powershell
 Start-Process -FilePath .\bin\NestedUnpack.exe -NoNewWindow -Wait -ArgumentList '--nested', '"D:\Downloads\one.mp4"', '"D:\Downloads\two.zip"'
@@ -26,10 +20,13 @@ Start-Process -FilePath .\bin\NestedUnpack.exe -NoNewWindow -Wait -ArgumentList 
 
 ## 构建和分发
 
-在 Windows 上使用 Go 1.25 或更新版本构建。
+Windows 构建需要 Rust 1.97.1 或更新版本、`x86_64-pc-windows-msvc` 目标，以及 Visual Studio C++ Build Tools 与 Windows SDK。在 PowerShell 中运行以下命令。
 
 ```powershell
 .\build.ps1
+cargo test --locked --target x86_64-pc-windows-msvc
 ```
 
-分发时只需提供生成的 `bin\NestedUnpack.exe`。程序内置 Go 解码器，支持 ZipCrypto、WinZip AES 和加密的 RAR、7z，运行机器无需安装 7-Zip。WinZip AES 成员支持 Store、Deflate 和 BZip2。依赖软件的许可可在管理窗口的 **第三方许可** 中查看。
+分发 `bin\NestedUnpack.exe` 即可。ZIP、7z 和 UnRAR 解码器随程序构建，目标机器无需安装 7-Zip。第三方许可从应用内或 `--licenses` 查看。
+
+Rust 版使用 egui/eframe 的 glow 后端，任务表使用 egui Extras 的 TableBuilder，图标来自 Phosphor。解压流程与窗口、文件关联和密码存储互相独立。macOS 和 Linux 的密码存储接入系统钥匙串或 Secret Service。当前发布与完整验证以 Windows x64 为准，资源管理器右键菜单仅在 Windows 提供。 [egui Extras](https://docs.rs/egui_extras/0.36.2/egui_extras/struct.TableBuilder.html) · [Phosphor Icons](https://phosphoricons.com/)
