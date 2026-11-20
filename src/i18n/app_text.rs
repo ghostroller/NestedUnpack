@@ -48,8 +48,8 @@ catalog! {
         #[cfg(not(windows))]
         ExplorerSelectionUnsupported => ("此平台不支持资源管理器选区", "Explorer selections are not supported on this platform."),
         Usage => (
-            "NestedUnpack [文件...]\nNestedUnpack --nested <文件> [更多文件...]\nNestedUnpack --outer <文件> [更多文件...]",
-            "NestedUnpack [files...]\nNestedUnpack --nested <file> [more files...]\nNestedUnpack --outer <file> [more files...]"
+            "NestedUnpack [文件...]\nNestedUnpack --nested <文件> [更多文件...]\nNestedUnpack --outer <文件> [更多文件...]\nNestedUnpack --licenses",
+            "NestedUnpack [files...]\nNestedUnpack --nested <file> [more files...]\nNestedUnpack --outer <file> [more files...]\nNestedUnpack --licenses"
         ),
         ConsoleFile => ("文件 {0}/{1} · {2}", "File {0}/{1} · {2}"),
         ConsoleLayer => ("第 {0} 层 · {1} · {2}", "Layer {0} · {1} · {2}"),

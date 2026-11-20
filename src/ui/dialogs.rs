@@ -6,7 +6,7 @@ use egui_phosphor::regular as icon;
 use zeroize::Zeroize as _;
 
 use crate::{
-    THIRD_PARTY_NOTICES,
+    LICENSES,
     i18n::{self, AppKey, Message, UiKey, tr},
     platform,
     session::PasswordReply,
@@ -423,7 +423,7 @@ fn show_menu(menu: &mut MenuSettings, ctx: &Context, p: Palette) -> SettingsActi
 }
 
 fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
-    let modal = Modal::new(Id::new("third-party-notices"))
+    let modal = Modal::new(Id::new("licenses"))
         .frame(p.card(20))
         .show(ctx, |ui| {
             ui.set_width(ui.ctx().content_rect().width().min(750.0) - 70.0);
@@ -433,8 +433,7 @@ fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
                 .max_height((ui.ctx().content_rect().height() - 155.0).max(0.0))
                 .show(ui, |ui| {
                     ui.add(
-                        Label::new(RichText::new(THIRD_PARTY_NOTICES).monospace().size(12.0))
-                            .selectable(true),
+                        Label::new(RichText::new(LICENSES).monospace().size(12.0)).selectable(true),
                     );
                 });
             style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {

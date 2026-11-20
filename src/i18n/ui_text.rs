@@ -9,7 +9,7 @@ catalog! {
         LightTheme => ("切换到浅色主题", "Switch to light theme"),
         DarkTheme => ("切换到深色主题", "Switch to dark theme"),
         ContextMenu => ("右键菜单", "Context menu"),
-        Licenses => ("第三方许可", "Third-party licenses"),
+        Licenses => ("许可证", "Licenses"),
         PasswordBook => ("密码簿", "Password book"),
         CurrentBatch => ("正在处理当前批次", "Processing current batch"),
         WaitingFile => ("另有 {0} 个文件等待解压", "{0} more file waiting"),

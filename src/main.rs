@@ -14,7 +14,12 @@ use std::sync::atomic::AtomicBool;
 
 use crate::i18n::{AppKey, format as localize, tr};
 
-pub(crate) const THIRD_PARTY_NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
+pub(crate) const LICENSES: &str = concat!(
+    "NestedUnpack project license\n\n",
+    include_str!("../LICENSE"),
+    "\n",
+    include_str!("../THIRD-PARTY-NOTICES.txt"),
+);
 
 fn main() {
     let code = run(std::env::args_os().skip(1).collect());
@@ -70,7 +75,7 @@ fn run(mut args: Vec<OsString>) -> i32 {
         }
         "--licenses" => {
             platform::attach_console();
-            print!("{THIRD_PARTY_NOTICES}");
+            print!("{LICENSES}");
             0
         }
         "--help" | "-h" => {

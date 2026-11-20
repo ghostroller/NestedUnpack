@@ -28,6 +28,16 @@ Windows 构建需要 Rust 1.97.1 或更新版本、`x86_64-pc-windows-msvc` 目�
 cargo test --locked --target x86_64-pc-windows-msvc
 ```
 
-分发 `bin\NestedUnpack.exe` 即可。ZIP、7z 和 UnRAR 解码器随程序构建，目标机器无需安装 7-Zip。第三方许可可在应用内、通过 `--licenses` 或在源码清单中查看。 [第三方许可清单](THIRD-PARTY-NOTICES.txt)
+ZIP、7z 和 UnRAR 解码器随 `bin\NestedUnpack.exe` 构建，目标机器无需安装 7-Zip。项目源码使用 MIT 许可证，随程序分发的组件适用各自的许可。两类许可均可在应用内或通过 `--licenses` 查看。 [MIT 许可证](LICENSE) · [第三方许可清单](THIRD-PARTY-NOTICES.txt)
+
+### GitHub Release
+
+推送版本标签后，从该标签手动运行发布工作流。
+
+```powershell
+gh workflow run release.yml --ref v0.1.0
+```
+
+工作流用 Rust 1.99.0 测试和构建 Windows x64 版本，并发布 `NestedUnpack-windows-x64.zip`。ZIP 包含可独立运行的 EXE 和两份许可文件。从分支运行同一个工作流时，可在 Actions 下载构建产物。 [发布工作流](.github/workflows/release.yml)
 
 NestedUnpack 使用 Rust 和 egui/eframe 的 glow 后端，任务表使用 egui Extras 的 TableBuilder，图标来自 Phosphor。解压流程与窗口、文件关联和密码存储互相独立。macOS 和 Linux 的密码存储接入系统钥匙串或 Secret Service。当前发布与完整验证以 Windows x64 为准，资源管理器右键菜单仅在 Windows 提供。 [egui Extras](https://docs.rs/egui_extras/0.36.2/egui_extras/struct.TableBuilder.html) · [Phosphor Icons](https://phosphoricons.com/)

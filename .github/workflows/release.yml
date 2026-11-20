@@ -1,0 +1,65 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0-x86_64-pc-windows-msvc
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the release Rust toolchain
+        shell: pwsh
+        run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+
+      - name: Test, build and package
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$visualStudio) { throw 'Visual Studio C++ Build Tools were not found.' }
+          & (Join-Path $visualStudio 'Common7\Tools\Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+
+          cargo test --locked --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./build.ps1 -OutputDirectory 'dist/portable'
+          Copy-Item -LiteralPath 'LICENSE','THIRD-PARTY-NOTICES.txt' -Destination 'dist/portable'
+          Compress-Archive -Path 'dist/portable/*' -DestinationPath 'dist/NestedUnpack-windows-x64.zip'
+
+      - name: Upload Windows x64 package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/NestedUnpack-windows-x64.zip
+          archive: false
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows x64 package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: NestedUnpack-windows-x64.zip
+          skip-decompress: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" NestedUnpack-windows-x64.zip \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
