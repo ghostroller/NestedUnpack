@@ -4,6 +4,8 @@ NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z�
 
 ## 使用
 
+在资源管理器中选中一个或多个文件，拖到 `NestedUnpack.exe` 图标上即可打开解压窗口。拖入任意一个 7z 分卷时，程序会从同一目录找齐其他分卷。一次拖入同组的多个分卷只处理一次。
+
 双击 `NestedUnpack.exe` 打开管理窗口。通过 **管理密码簿** 可以添加、查看或删除保存的密码。选择 **注册到当前位置** 后，便可在资源管理器里选中一个或多个 `.zip`、`.zipx`、`.mp4`、`.rar`、`.7z` 或 `.7z.001` 文件，通过 **显示更多选项 → 解开嵌套压缩包** 启动批量解压。
 
 菜单注册作用于当前 Windows 用户。移动或重命名程序后，在新位置打开程序并再次选择 **注册到当前位置** 即可更新菜单。选择 **移除** 可撤销注册。
@@ -16,7 +18,7 @@ NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z�
 
 勾选 **密码正确时保存到密码簿** 后，验证通过的密码会保存供后续解压使用。密码簿由 Windows DPAPI 加密，绑定当前 Windows 用户，保存在 `%LOCALAPPDATA%\NestedUnpack\passwords.dpapi`。PowerShell 启动的解压也会读取密码簿，手动输入的密码在本批次内复用。
 
-也可以从 PowerShell 使用 `--nested` 以命令行模式递归解压。使用 `--outer` 可以只提取外层 ZIP 内的 RAR。
+从 PowerShell 直接传入文件路径也会打开解压窗口。使用 `--nested` 可在终端递归解压，使用 `--outer` 可只提取外层 ZIP 内的 RAR。
 
 ```powershell
 Start-Process -FilePath .\bin\NestedUnpack.exe -NoNewWindow -Wait -ArgumentList '--nested', '"D:\Downloads\one.mp4"', '"D:\Downloads\two.zip"'

@@ -111,8 +111,7 @@ func run(args []string) int {
 		}
 		return runNested(args[1:])
 	default:
-		connectConsole()
-		return runOuter(args, false)
+		return runNestedGUI(args)
 	}
 }
 

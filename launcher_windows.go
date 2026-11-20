@@ -31,7 +31,7 @@ func runLauncherGUI() int {
 		return 1
 	}
 	template := guiDialogTemplate("NestedUnpack", 318, 136, []guiDialogControl{
-		{x: 15, y: 14, width: 288, height: 13, id: 0xffff, class: 0x0082, text: "通过资源管理器右键菜单启动批量解压。"},
+		{x: 15, y: 14, width: 288, height: 13, id: 0xffff, class: 0x0082, text: "将压缩包拖到程序图标上即可解压。"},
 		{style: guiWSTabStop, x: 15, y: 33, width: 92, height: 20, id: launcherPasswordBook, class: 0x0080, text: "管理密码簿"},
 		{style: 7, x: 15, y: 59, width: 288, height: 44, id: 0xffff, class: 0x0080, text: "资源管理器右键菜单"}, // BS_GROUPBOX
 		{x: 25, y: 77, width: 118, height: 14, id: launcherMenuStatus, class: 0x0082},
