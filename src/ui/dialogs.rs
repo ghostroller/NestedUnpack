@@ -175,7 +175,9 @@ fn show_password(prompt: &mut PasswordPrompt, ctx: &Context, p: Palette) -> Pass
                     [ui.available_width() - 44.0, 34.0],
                     TextEdit::singleline(&mut prompt.value)
                         .password(!prompt.reveal)
-                        .hint_text("输入密码"),
+                        .hint_text("输入密码")
+                        .vertical_align(Align::Center)
+                        .margin(egui::Margin::symmetric(10, 4)),
                 );
                 if std::mem::take(&mut prompt.autofocus) {
                     input.request_focus();
@@ -400,10 +402,6 @@ fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
 }
 
 fn title(ui: &mut Ui, p: Palette, symbol: &str, label: &str) {
-    style::row(ui, 38.0, Layout::left_to_right(Align::Center), |ui| {
-        style::glyph_tile(ui, symbol, p, 36.0);
-        ui.add_space(2.0);
-        ui.label(RichText::new(label).size(20.0).strong());
-    });
+    style::icon_heading(ui, symbol, p, label);
     ui.add_space(3.0);
 }

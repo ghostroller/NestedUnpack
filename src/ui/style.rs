@@ -1,10 +1,13 @@
 use std::{fs, path::PathBuf};
 
 use eframe::egui::{
-    self, Button, Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId,
-    Frame, Layout, Margin, Response, RichText, Stroke, TextStyle, Theme, Ui, Visuals, WidgetInfo,
-    WidgetType, vec2,
+    self, Atom, AtomExt as _, AtomLayout, AtomLayoutResponse, Button, Color32, Context,
+    CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout, Margin, Pos2,
+    Response, RichText, Stroke, TextStyle, TextWrapMode, Theme, Ui, Visuals, Widget, WidgetInfo,
+    WidgetText, WidgetType, vec2,
 };
+
+const ICON_FONT: &str = "phosphor";
 
 #[derive(Clone, Copy)]
 pub(super) struct Palette {
@@ -150,7 +153,13 @@ pub(super) fn configure(ctx: &Context) {
             .or_default()
             .push(name.into());
     }
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    fonts.font_data.insert(
+        ICON_FONT.into(),
+        FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
+    );
+    fonts
+        .families
+        .insert(FontFamily::Name(ICON_FONT.into()), vec![ICON_FONT.into()]);
     ctx.set_fonts(fonts);
 
     for theme in [Theme::Light, Theme::Dark] {
@@ -186,6 +195,7 @@ pub(super) fn configure(ctx: &Context) {
                 widget.fg_stroke.color = p.text;
             }
             style.visuals = visuals;
+            style.interaction.selectable_labels = false;
             style.spacing.item_spacing = vec2(8.0, 8.0);
             style.spacing.button_padding = vec2(12.0, 6.0);
             style.spacing.interact_size.y = 30.0;
@@ -206,23 +216,132 @@ pub(super) fn configure(ctx: &Context) {
     }
 }
 
-pub(super) fn button(icon: &str, label: &str) -> Button<'static> {
-    Button::new(format!("{icon}  {label}")).min_size(vec2(0.0, 34.0))
+fn paint_icon(ui: &Ui, center: Pos2, symbol: &str, size: f32, color: Color32) {
+    let font = FontId::new(size, FontFamily::Name(ICON_FONT.into()));
+    let galley = ui
+        .painter()
+        .layout_no_wrap(symbol.to_owned(), font, Color32::PLACEHOLDER);
+    if galley.mesh_bounds.is_positive() {
+        ui.painter().galley(
+            center - galley.mesh_bounds.center().to_vec2(),
+            galley,
+            color,
+        );
+    }
 }
 
-pub(super) fn primary(icon: &str, label: &str, p: Palette) -> Button<'static> {
-    Button::new(
-        RichText::new(format!("{icon}  {label}"))
-            .color(Color32::WHITE)
-            .strong(),
+struct InlineIcon<'a> {
+    symbol: &'a str,
+    size: f32,
+    text: RichText,
+}
+
+impl InlineIcon<'_> {
+    fn atoms(&self, slot_size: f32) -> (Atom<'static>, Atom<'static>) {
+        (
+            Atom::custom(Id::new("icon"), vec2(slot_size, slot_size)),
+            self.text
+                .clone()
+                .atom_id(Id::new("caption"))
+                .atom_shrink(true),
+        )
+    }
+
+    fn paint(&self, ui: &Ui, layout: &AtomLayoutResponse, color: Color32, font: TextStyle) {
+        let (Some(icon), Some(caption)) = (
+            layout.rect(Id::new("icon")),
+            layout.rect(Id::new("caption")),
+        ) else {
+            return;
+        };
+        if !ui.is_rect_visible(icon) {
+            return;
+        }
+
+        // Different font faces place their visible glyphs at different heights
+        // in the line box. Center the icon on the first painted line of text.
+        let galley = WidgetText::from(self.text.clone()).into_galley(
+            ui,
+            Some(TextWrapMode::Extend),
+            f32::INFINITY,
+            font,
+        );
+        let mut center = icon.center();
+        if let Some(line) = galley.rows.first()
+            && line.row.visuals.mesh_bounds.is_positive()
+        {
+            center.y = caption.top() + line.pos.y + line.row.visuals.mesh_bounds.center().y;
+        }
+        paint_icon(ui, center, self.symbol, self.size, color);
+    }
+}
+
+pub(super) fn icon_label(
+    ui: &mut Ui,
+    symbol: &str,
+    size: f32,
+    color: Color32,
+    text: RichText,
+    mode: TextWrapMode,
+) -> Response {
+    let content = InlineIcon { symbol, size, text };
+    let layout = AtomLayout::new(content.atoms(size))
+        .gap(6.0)
+        .fallback_font(TextStyle::Body)
+        .wrap_mode(mode)
+        .show(ui);
+    content.paint(ui, &layout, color, TextStyle::Body);
+    layout.response.widget_info(|| {
+        WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content.text.text())
+    });
+    layout.response
+}
+
+pub(super) fn icon_text_button<'a>(
+    symbol: &'a str,
+    size: f32,
+    color: Option<Color32>,
+    text: RichText,
+    configure: impl FnOnce(Button<'static>) -> Button<'static> + 'a,
+) -> impl Widget + 'a {
+    move |ui: &mut Ui| {
+        let content = InlineIcon { symbol, size, text };
+        let layout = configure(Button::new(content.atoms(size)).gap(6.0)).atom_ui(ui);
+        let color = color.unwrap_or_else(|| ui.style().interact(&layout.response).fg_stroke.color);
+        content.paint(ui, &layout, color, TextStyle::Button);
+        layout.response
+    }
+}
+
+pub(super) fn button<'a>(symbol: &'a str, label: &str) -> impl Widget + 'a + use<'a> {
+    icon_text_button(symbol, 14.0, None, RichText::new(label), |button| {
+        button.min_size(vec2(0.0, 34.0))
+    })
+}
+
+pub(super) fn primary<'a>(symbol: &'a str, label: &str, p: Palette) -> impl Widget + 'a + use<'a> {
+    icon_text_button(
+        symbol,
+        14.0,
+        Some(Color32::WHITE),
+        RichText::new(label).color(Color32::WHITE).strong(),
+        move |button| {
+            button
+                .fill(p.accent_fill)
+                .stroke(Stroke::NONE)
+                .min_size(vec2(0.0, 36.0))
+        },
     )
-    .fill(p.accent_fill)
-    .stroke(Stroke::NONE)
-    .min_size(vec2(0.0, 36.0))
 }
 
 pub(super) fn icon_button(ui: &mut Ui, symbol: &str, label: &str) -> Response {
-    let response = ui.add(Button::new(RichText::new(symbol).size(17.0)).min_size(vec2(34.0, 34.0)));
+    let response = ui.add(
+        Button::new(Atom::custom(Id::new("icon"), vec2(17.0, 17.0))).min_size(vec2(34.0, 34.0)),
+    );
+    let color = ui.style().interact(&response).fg_stroke.color;
+    if ui.is_rect_visible(response.rect) {
+        paint_icon(ui, response.rect.center(), symbol, 17.0, color);
+    }
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), label));
     response.on_hover_text(label)
 }
@@ -240,11 +359,24 @@ pub(super) fn row<R>(
 pub(super) fn glyph_tile(ui: &mut Ui, icon: &str, p: Palette, side: f32) {
     let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
     ui.painter().rect_filled(rect, 11, p.accent_soft);
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        FontId::proportional(side * 0.49),
-        p.accent,
-    );
+    paint_icon(ui, rect.center(), icon, side * 0.49, p.accent);
+}
+
+pub(super) fn icon_heading(ui: &mut Ui, symbol: &str, p: Palette, label: &str) {
+    let content = InlineIcon {
+        symbol,
+        size: 18.0,
+        text: RichText::new(label).size(20.0).strong(),
+    };
+    let layout = AtomLayout::new(content.atoms(36.0))
+        .gap(10.0)
+        .fallback_font(TextStyle::Body)
+        .show(ui);
+    if let Some(tile) = layout.rect(Id::new("icon")) {
+        ui.painter().rect_filled(tile, 11, p.accent_soft);
+    }
+    content.paint(ui, &layout, p.accent, TextStyle::Body);
+    layout
+        .response
+        .widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), label));
 }

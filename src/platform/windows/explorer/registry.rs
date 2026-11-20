@@ -4,30 +4,48 @@ use std::os::windows::ffi::OsStringExt;
 
 use ::windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
 use ::windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_64KEY, KEY_WRITE,
-    REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegCreateKeyExW,
-    RegDeleteTreeW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY,
+    KEY_WOW64_64KEY, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
 };
 use ::windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use ::windows::core::{GUID, PCWSTR};
 
 use super::super::{equal_ignore_case, wide};
 
-pub(super) const CLASS: GUID = GUID::from_u128(0x9e941531_6a19_4358_a773_30cd664be034);
-const CLASS_TEXT: &str = "{9E941531-6A19-4358-A773-30CD664BE034}";
-const VERB: &str = r"Software\Classes\*\shell\NestedUnpack.Extract";
-const COMMAND: &str = r"Software\Classes\*\shell\NestedUnpack.Extract\command";
-const CLASS_KEY: &str = r"Software\Classes\CLSID\{9E941531-6A19-4358-A773-30CD664BE034}";
-const SERVER: &str = r"Software\Classes\CLSID\{9E941531-6A19-4358-A773-30CD664BE034}\LocalServer32";
+// A separate command and COM class avoid reusing a running legacy launcher.
+pub(super) const CLASS: GUID = GUID::from_u128(0x4f608ace_d6e4_406b_8972_1da68eb54ef8);
+const CLASS_TEXT: &str = "{4F608ACE-D6E4-406B-8972-1DA68EB54EF8}";
+const VERB: &str = r"Software\Classes\*\shell\NestedUnpack.ExtractArchives";
+const COMMAND: &str = r"Software\Classes\*\shell\NestedUnpack.ExtractArchives\command";
+const CLASS_KEY: &str = r"Software\Classes\CLSID\{4F608ACE-D6E4-406B-8972-1DA68EB54EF8}";
+const SERVER: &str = r"Software\Classes\CLSID\{4F608ACE-D6E4-406B-8972-1DA68EB54EF8}\LocalServer32";
+const MENU_LABEL: &str = "解开嵌套压缩包";
 const APPLIES_TO: &str = concat!(
     r#"System.FileExtension:=".zip" OR System.FileExtension:=".zipx" OR System.FileExtension:=".mp4" OR "#,
     r#"System.FileExtension:=".rar" OR System.FileExtension:=".7z" OR System.FileName:~>".7z.001""#,
 );
-const OLD_KEYS: [&str; 3] = [
+const LEGACY_VERBS: [&str; 3] = [
+    r"Software\Classes\*\shell\NestedUnpack.Extract",
     r"Software\Classes\*\shell\OuterRar.ExtractNested",
     r"Software\Classes\*\shell\OuterRar.Extract",
+];
+const LEGACY_CLASSES: [&str; 2] = [
+    r"Software\Classes\CLSID\{9E941531-6A19-4358-A773-30CD664BE034}",
     r"Software\Classes\CLSID\{DF5835F3-405C-4950-94CE-121C0EA39879}",
 ];
+
+fn legacy_keys() -> impl Iterator<Item = (&'static str, REG_SAM_FLAGS)> {
+    // Shell verbs in Software\Classes are shared, but CLSID keys are redirected.
+    LEGACY_VERBS
+        .into_iter()
+        .map(|key| (key, KEY_WOW64_64KEY))
+        .chain(LEGACY_CLASSES.into_iter().flat_map(|key| {
+            [KEY_WOW64_64KEY, KEY_WOW64_32KEY]
+                .into_iter()
+                .map(move |view| (key, view))
+        }))
+}
 
 fn server_command(exe: &OsStr) -> OsString {
     let mut command = OsString::from("\"");
@@ -44,6 +62,9 @@ pub fn menu_registered() -> io::Result<bool> {
         (SERVER, "", command.as_os_str()),
         (SERVER, "ServerExecutable", exe),
         (COMMAND, "DelegateExecute", OsStr::new(CLASS_TEXT)),
+        (VERB, "MUIVerb", OsStr::new(MENU_LABEL)),
+        (VERB, "MultiSelectModel", OsStr::new("Player")),
+        (VERB, "AppliesTo", OsStr::new(APPLIES_TO)),
     ];
     for (key, name, expected) in expected {
         let value = match read_value(key, name) {
@@ -53,6 +74,13 @@ pub fn menu_registered() -> io::Result<bool> {
         };
         if !equal_ignore_case(&value, expected) {
             return Ok(false);
+        }
+    }
+    for (key, view) in legacy_keys() {
+        match Key::open(key, KEY_QUERY_VALUE, view) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(true)
@@ -72,18 +100,26 @@ pub fn register_menu() -> io::Result<()> {
     write_values(
         VERB,
         &[
-            ("MUIVerb", OsStr::new("解开嵌套压缩包")),
+            ("MUIVerb", OsStr::new(MENU_LABEL)),
             ("NeverDefault", OsStr::new("")),
             ("MultiSelectModel", OsStr::new("Player")),
             ("AppliesTo", OsStr::new(APPLIES_TO)),
         ],
     )?;
-    delete_keys(OLD_KEYS)
+    delete_keys(legacy_keys())
 }
 
 pub fn remove_menu() -> io::Result<()> {
     let _notify = AssociationChange;
-    delete_keys([VERB, CLASS_KEY].into_iter().chain(OLD_KEYS))
+    delete_keys(
+        [
+            (VERB, KEY_WOW64_64KEY),
+            (CLASS_KEY, KEY_WOW64_64KEY),
+            (CLASS_KEY, KEY_WOW64_32KEY),
+        ]
+        .into_iter()
+        .chain(legacy_keys()),
+    )
 }
 
 struct AssociationChange;
@@ -98,7 +134,7 @@ impl Drop for AssociationChange {
 struct Key(HKEY);
 
 impl Key {
-    fn open(path: &str, access: REG_SAM_FLAGS) -> io::Result<Self> {
+    fn open(path: &str, access: REG_SAM_FLAGS, view: REG_SAM_FLAGS) -> io::Result<Self> {
         let path = wide(path.as_ref())?;
         let mut key = HKEY::default();
         let status = unsafe {
@@ -106,7 +142,7 @@ impl Key {
                 HKEY_CURRENT_USER,
                 PCWSTR(path.as_ptr()),
                 None,
-                access | KEY_WOW64_64KEY,
+                access | view,
                 &mut key,
             )
         };
@@ -162,7 +198,7 @@ fn write_values(path: &str, values: &[(&str, &OsStr)]) -> io::Result<()> {
 }
 
 fn read_value(path: &str, name: &str) -> io::Result<OsString> {
-    let key = Key::open(path, KEY_QUERY_VALUE)?;
+    let key = Key::open(path, KEY_QUERY_VALUE, KEY_WOW64_64KEY)?;
     let name = wide(name.as_ref())?;
     let mut size = 0;
     let value = PCWSTR(name.as_ptr());
@@ -204,10 +240,10 @@ fn read_value(path: &str, name: &str) -> io::Result<OsString> {
     Ok(OsString::from_wide(&buffer[..end]))
 }
 
-fn delete_keys<'a>(paths: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+fn delete_keys<'a>(paths: impl IntoIterator<Item = (&'a str, REG_SAM_FLAGS)>) -> io::Result<()> {
     let mut first_error = None;
-    for path in paths {
-        let result = delete_key(path);
+    for (path, view) in paths {
+        let result = delete_key(path, view);
         if let Err(error) = result {
             first_error.get_or_insert(error);
         }
@@ -215,12 +251,12 @@ fn delete_keys<'a>(paths: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
     first_error.map_or(Ok(()), Err)
 }
 
-fn delete_key(path: &str) -> io::Result<()> {
+fn delete_key(path: &str, view: REG_SAM_FLAGS) -> io::Result<()> {
     let (parent, name) = path
         .rsplit_once('\\')
         .expect("registry path includes parent");
     const DELETE: REG_SAM_FLAGS = REG_SAM_FLAGS(0x0001_0000);
-    let key = match Key::open(parent, KEY_READ | KEY_WRITE | DELETE) {
+    let key = match Key::open(parent, KEY_READ | KEY_WRITE | DELETE, view) {
         Ok(key) => key,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),

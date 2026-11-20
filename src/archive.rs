@@ -134,7 +134,7 @@ pub(crate) fn safe_path(destination: &Path, name: &str) -> Result<PathBuf, Extra
     Ok(output)
 }
 
-fn windows_device_name(part: &str) -> bool {
+pub(crate) fn windows_device_name(part: &str) -> bool {
     let stem = part.split('.').next().unwrap_or(part).trim_end_matches(' ');
     let stem = stem.to_ascii_uppercase();
     if matches!(

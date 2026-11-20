@@ -774,18 +774,32 @@ fn extracted_files(root: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 fn publish(from: &Path, source: &Path, rar: bool) -> io::Result<PathBuf> {
-    let stem = source
+    let directory = parent(source)?;
+    let file_stem = source
         .file_stem()
-        .unwrap_or(source.as_os_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "无法定位源文件名"))?
         .to_string_lossy();
+    let mut stem = file_stem.as_ref();
+    let mut prefix = "";
+    if !rar {
+        if cfg!(windows) {
+            stem = stem.trim_end_matches([' ', '.']);
+            if archive::windows_device_name(stem) {
+                prefix = "_";
+            }
+        }
+        if matches!(stem, "" | "." | "..") {
+            stem = "解压结果";
+        }
+    }
     for number in 1.. {
         let suffix = match (rar, number) {
-            (false, 1) => "-解压".into(),
+            (false, 1) => String::new(),
             (true, 1) => ".rar".into(),
-            (false, _) => format!("-解压 ({number})"),
+            (false, _) => format!(" ({number})"),
             (true, _) => format!(" ({number}).rar"),
         };
-        let mut limit = 255 - units(&suffix);
+        let mut limit = 255 - units(prefix) - units(&suffix);
         let end = stem
             .char_indices()
             .find_map(|(index, ch)| {
@@ -800,7 +814,7 @@ fn publish(from: &Path, source: &Path, rar: bool) -> io::Result<PathBuf> {
                 })
             })
             .unwrap_or(stem.len());
-        let to = parent(source)?.join(format!("{}{}", &stem[..end], suffix));
+        let to = directory.join(format!("{prefix}{}{suffix}", &stem[..end]));
         match rename_new(from, &to) {
             Ok(()) => return Ok(to),
             Err(err)
