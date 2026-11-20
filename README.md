@@ -4,9 +4,11 @@ NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z�
 
 ## 使用
 
-在资源管理器里选中一个或多个 `.zip`、`.mp4` 文件，通过右键菜单的 **显示更多选项 → 解开嵌套压缩包** 启动。主窗口可调整大小，主窗口和密码框都随所在屏幕的显示缩放调整。
+双击 `NestedUnpack.exe` 打开管理窗口。通过 **管理密码簿** 可以添加、查看或删除保存的密码。选择 **注册到当前位置** 后，便可在资源管理器里选中一个或多个 `.zip`、`.zipx`、`.mp4`、`.rar`、`.7z` 或 `.7z.001` 文件，通过 **显示更多选项 → 解开嵌套压缩包** 启动批量解压。
 
-窗口分别显示批次已处理的源文件数，以及当前压缩包的层数、名称和解压进度。内层压缩包会在解开外层后逐步发现，窗口会更新已发现和已解开的数量。每个源文件都有一条结果，成功时显示输出目录、最终文件数、解开的压缩包数和最深层数，跳过或失败时显示原因。
+菜单注册作用于当前 Windows 用户。移动或重命名程序后，在新位置打开程序并再次选择 **注册到当前位置** 即可更新菜单。选择 **移除** 可撤销注册。
+
+解压窗口可调整大小，管理窗口、解压窗口和密码框都随所在屏幕的显示缩放调整。解压窗口分别显示批次已处理的源文件数，以及当前压缩包的层数、名称和解压进度。内层压缩包会在解开外层后逐步发现，窗口会更新已发现和已解开的数量。每个源文件都有一条结果，成功时显示输出目录、最终文件数、解开的压缩包数和最深层数，跳过或失败时显示原因。
 
 从结果列表选中源文件即可查看其压缩包结构。可展开的树会保留原始嵌套层级和包内相对路径，同一组分卷放在一个节点下。每发现、开始或解开一个压缩包，结果树都会更新。跳过或失败的项目仍可查看已经发现的结构。
 
@@ -14,19 +16,18 @@ NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z�
 
 勾选 **密码正确时保存到密码簿** 后，验证通过的密码会保存供后续解压使用。密码簿由 Windows DPAPI 加密，绑定当前 Windows 用户，保存在 `%LOCALAPPDATA%\NestedUnpack\passwords.dpapi`。PowerShell 启动的解压也会读取密码簿，手动输入的密码在本批次内复用。
 
-也可以从 PowerShell 启动同一流程。
+也可以从 PowerShell 使用 `--nested` 以命令行模式递归解压。使用 `--outer` 可以只提取外层 ZIP 内的 RAR。
 
 ```powershell
-.\bin\NestedUnpack.exe --nested 'D:\Downloads\one.mp4' 'D:\Downloads\two.zip'
+Start-Process -FilePath .\bin\NestedUnpack.exe -NoNewWindow -Wait -ArgumentList '--nested', '"D:\Downloads\one.mp4"', '"D:\Downloads\two.zip"'
 ```
 
-## 构建和注册
+## 构建和分发
 
-构建需要 Go 1.25 或更新版本，以及可从 `PATH` 调用的 LLVM MinGW `clang++`。解压由程序内置的 Go 解码器完成，支持 ZipCrypto、WinZip AES 和加密的 RAR、7z。运行机器无需安装 7-Zip。WinZip AES 成员支持 Store、Deflate 和 BZip2。
+在 Windows 上使用 Go 1.25 或更新版本构建。
 
 ```powershell
 .\build.ps1
-.\menu.ps1
 ```
 
-菜单注册作用于当前 Windows 用户，并使用这个目录下的 `bin`。移动工具后可在新目录重新运行 `menu.ps1` 更新路径。运行 `menu.ps1 -Remove` 可移除菜单注册。
+分发时只需提供生成的 `bin\NestedUnpack.exe`。程序内置 Go 解码器，支持 ZipCrypto、WinZip AES 和加密的 RAR、7z，运行机器无需安装 7-Zip。WinZip AES 成员支持 Store、Deflate 和 BZip2。依赖软件的许可可在管理窗口的 **第三方许可** 中查看。

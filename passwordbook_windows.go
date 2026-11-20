@@ -65,6 +65,25 @@ func (book *passwordBook) Remember(password string) error {
 	if password == "" {
 		return nil
 	}
+	return book.update(func(passwords []string) ([]string, bool) {
+		if slices.Contains(passwords, password) {
+			return passwords, false
+		}
+		return append([]string{password}, passwords...), true
+	})
+}
+
+func (book *passwordBook) Forget(password string) error {
+	return book.update(func(passwords []string) ([]string, bool) {
+		index := slices.Index(passwords, password)
+		if index == -1 {
+			return passwords, false
+		}
+		return slices.Delete(passwords, index, index+1), true
+	})
+}
+
+func (book *passwordBook) update(change func([]string) ([]string, bool)) error {
 	book.mu.Lock()
 	defer book.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(book.path), 0700); err != nil {
@@ -75,13 +94,13 @@ func (book *passwordBook) Remember(password string) error {
 		return err
 	}
 	defer unlock()
-	// Reload under the lock so two Explorer jobs cannot overwrite each other's additions.
+	// Reload under the lock so concurrent jobs and editors preserve each other's changes.
 	passwords, err := readPasswordBook(book.path)
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(passwords, password) {
-		passwords = append([]string{password}, passwords...)
+	passwords, changed := change(passwords)
+	if changed {
 		if err := writePasswordBook(book.path, passwords); err != nil {
 			return err
 		}

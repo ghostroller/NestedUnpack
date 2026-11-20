@@ -66,3 +66,47 @@ func TestPasswordBookConcurrentSaves(t *testing.T) {
 		t.Fatal("a concurrent password book save lost an entry")
 	}
 }
+
+func TestPasswordBookDeleteKeepsConcurrentAddition(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	manager, err := loadPasswordBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const removed = " 模拟密码 · 待删除🔐 "
+	const added = "模拟密码 · 新密码"
+	if err := manager.Remember(removed); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := loadPasswordBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	go func() { results <- worker.Remember(added) }()
+	go func() { results <- manager.Forget(removed) }()
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	reloaded, err := loadPasswordBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reloaded.Passwords(), []string{added}) {
+		t.Fatal("deleting a password lost a concurrent addition or retained the deleted password")
+	}
+
+	if err := reloaded.Forget(added); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = loadPasswordBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Passwords()) != 0 {
+		t.Fatal("deleting the last password did not leave an empty password book")
+	}
+}

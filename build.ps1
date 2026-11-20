@@ -1,14 +1,12 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = 'bin',
-    [string]$Cxx = 'clang++'
+    [string]$OutputDirectory = 'bin'
 )
 
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'NestedUnpack builds on Windows.' }
 
 $go = (Get-Command go -CommandType Application -ErrorAction Stop).Source
-$compiler = (Get-Command $Cxx -CommandType Application -ErrorAction Stop).Source
 if (-not [IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $PSScriptRoot $OutputDirectory
 }
@@ -48,36 +46,22 @@ if (-not ('NestedUnpack.BuildResources' -as [type])) {
 $stage = Join-Path $output ('.build-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($stage) | Out-Null
 $extractor = Join-Path $stage 'NestedUnpack.exe'
-$gui = Join-Path $stage 'NestedUnpackGUI.exe'
-$helper = Join-Path $stage 'NestedUnpackShell.exe'
-$object = Join-Path $stage 'shell.o'
-$shell = Join-Path $PSScriptRoot 'shell'
-$source = Join-Path $shell 'shell.cpp'
+$manifest = Join-Path $PSScriptRoot 'app.manifest'
+$previousCgo = $env:CGO_ENABLED
 
 Push-Location -LiteralPath $PSScriptRoot
 try {
-    & $go build -trimpath -ldflags '-s -w' -o $extractor .
+    $env:CGO_ENABLED = '0'
+    & $go build -buildvcs=false -trimpath -ldflags '-s -w -H=windowsgui' -o $extractor .
     if ($LASTEXITCODE -ne 0) { throw "Go build failed with exit code $LASTEXITCODE." }
+    [NestedUnpack.BuildResources]::EmbedManifest($extractor, [IO.File]::ReadAllBytes($manifest))
 
-    & $go build -trimpath -ldflags '-s -w -H=windowsgui' -o $gui .
-    if ($LASTEXITCODE -ne 0) { throw "Go GUI build failed with exit code $LASTEXITCODE." }
-    [NestedUnpack.BuildResources]::EmbedManifest($gui, [IO.File]::ReadAllBytes((Join-Path $shell 'gui.manifest')))
-
-    & $compiler -std=c++17 -O2 -Wall -Wextra -Wpedantic -c $source -o $object
-    if ($LASTEXITCODE -ne 0) { throw "Shell helper compilation failed with exit code $LASTEXITCODE." }
-
-    & $compiler -municode -mwindows -static -s $object -lshell32 -lole32 -luuid -o $helper
-    if ($LASTEXITCODE -ne 0) { throw "Shell helper linking failed with exit code $LASTEXITCODE." }
-
-    foreach ($artifact in @($extractor, $gui, $helper)) {
-        $destination = Join-Path $output ([IO.Path]::GetFileName($artifact))
-        [IO.File]::Copy($artifact, $destination, $true)
-        $destination
-    }
+    $destination = Join-Path $output 'NestedUnpack.exe'
+    [IO.File]::Copy($extractor, $destination, $true)
+    $destination
 } finally {
+    $env:CGO_ENABLED = $previousCgo
     Pop-Location
-    foreach ($temporary in @($extractor, $gui, $helper, $object)) {
-        [IO.File]::Delete($temporary)
-    }
+    [IO.File]::Delete($extractor)
     [IO.Directory]::Delete($stage, $false)
 }

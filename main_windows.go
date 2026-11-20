@@ -73,39 +73,76 @@ func (result *batch) process(source string) {
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
-	nested := len(args) > 0 && (args[0] == "--nested" || args[0] == "--nested-selection-file")
-	fromExplorer := len(args) > 0 && (args[0] == "--selection-file" || args[0] == "--nested-selection-file")
-	notifyExplorer := notify
-	if nested {
-		notifyExplorer = guiNotify
-	}
-	if fromExplorer {
-		if len(args) != 2 {
-			notifyExplorer("无法读取资源管理器选区。", true)
-			return 2
-		}
-		var err error
-		args, err = readSelection(args[1])
-		if err != nil {
-			notifyExplorer("无法读取资源管理器选区。\n"+err.Error(), true)
-			return 2
-		}
-	} else if nested {
-		args = args[1:]
-	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "用法: NestedUnpack.exe [--nested] <文件> [更多文件...]")
-		if fromExplorer {
-			notifyExplorer("选区内没有可处理的文件。", true)
+		return runLauncherGUI()
+	}
+	switch args[0] {
+	case "--explorer-server":
+		if len(args) == 2 && (strings.EqualFold(args[1], "-Embedding") || strings.EqualFold(args[1], "/Embedding")) {
+			return runExplorerCommandServer()
 		}
 		return 2
-	}
-	if nested {
-		if fromExplorer {
-			return runNestedGUI(args)
+	case "--nested-selection-file", "--selection-file":
+		if len(args) != 2 {
+			guiNotify("无法读取资源管理器选区。", true)
+			return 2
 		}
-		return runNested(args)
+		paths, err := readSelection(args[1])
+		if err != nil {
+			guiNotify("无法读取资源管理器选区。\n"+err.Error(), true)
+			return 2
+		}
+		if len(paths) == 0 {
+			guiNotify("选区内没有可处理的文件。", true)
+			return 2
+		}
+		if args[0] == "--selection-file" {
+			return runOuter(paths, true)
+		}
+		return runNestedGUI(paths)
+	case "--nested", "--outer":
+		connectConsole()
+		if len(args) == 1 {
+			fmt.Fprintln(os.Stderr, "用法: NestedUnpack.exe [--nested | --outer] <文件> [更多文件...]")
+			return 2
+		}
+		if args[0] == "--outer" {
+			return runOuter(args[1:], false)
+		}
+		return runNested(args[1:])
+	default:
+		connectConsole()
+		return runOuter(args, false)
 	}
+}
+
+// The GUI subsystem starts without a console for double-click and drag-and-drop.
+// Explicit console modes can use the parent's terminal or inherited pipes.
+func connectConsole() {
+	attach := syscall.NewLazyDLL("kernel32.dll").NewProc("AttachConsole")
+	attach.Call(0xffffffff) // ATTACH_PARENT_PROCESS
+	for _, stream := range []struct {
+		file   **os.File
+		handle int
+		name   string
+	}{
+		{&os.Stdin, syscall.STD_INPUT_HANDLE, "stdin"},
+		{&os.Stdout, syscall.STD_OUTPUT_HANDLE, "stdout"},
+		{&os.Stderr, syscall.STD_ERROR_HANDLE, "stderr"},
+	} {
+		if current := *stream.file; current != nil {
+			if handle := syscall.Handle(current.Fd()); handle != 0 && handle != syscall.InvalidHandle {
+				continue
+			}
+		}
+		handle, err := syscall.GetStdHandle(stream.handle)
+		if err == nil && handle != 0 && handle != syscall.InvalidHandle {
+			*stream.file = os.NewFile(uintptr(handle), stream.name)
+		}
+	}
+}
+
+func runOuter(args []string, fromExplorer bool) int {
 	var result batch
 	seen := make(map[string]bool)
 	for _, selected := range args {

@@ -239,11 +239,7 @@ func runNestedGUI(paths []string) int {
 	if result, _, _ := guiCOMInitialize.Call(0, 0x6); int32(result) >= 0 {
 		defer guiCOMUninitialize.Call() // COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE
 	}
-	if guiSetProcessDPI.Find() == nil {
-		guiSetProcessDPI.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-	} else {
-		guiSetLegacyDPI.Call()
-	}
+	guiEnablePerMonitorDPI()
 	windowCtx, cancelWindow := context.WithCancel(context.Background())
 	defer cancelWindow()
 	jobCtx, cancelJob := context.WithCancel(windowCtx)
