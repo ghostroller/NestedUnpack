@@ -1,11 +1,17 @@
 use std::{fs, path::PathBuf};
 
 use eframe::egui::{
-    self, Atom, AtomExt as _, AtomLayout, AtomLayoutResponse, Button, Color32, Context,
-    CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout, Margin, Pos2,
-    Response, RichText, Stroke, TextStyle, TextWrapMode, Theme, Ui, Visuals, Widget, WidgetInfo,
-    WidgetText, WidgetType, vec2,
+    self, Align2, Atom, AtomExt as _, AtomLayout, AtomLayoutResponse, Button, Color32, Context,
+    CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Frame, Galley, Id, Layout, Margin,
+    Pos2, Response, RichText, Sense, Stroke, TextStyle, TextWrapMode, Theme, Ui, Visuals, Widget,
+    WidgetInfo, WidgetText, WidgetType,
+    collapsing_header::CollapsingState,
+    emath::{GuiRounding as _, Rot2},
+    vec2,
 };
+use egui_phosphor::regular as icon;
+
+use crate::session::Status;
 
 const ICON_FONT: &str = "phosphor";
 
@@ -24,6 +30,17 @@ pub(super) struct Palette {
     pub warning: Color32,
     pub warning_soft: Color32,
     pub danger: Color32,
+}
+
+pub(super) fn status_style(p: Palette, status: Status) -> (&'static str, &'static str, Color32) {
+    match status {
+        Status::Pending => (icon::CLOCK, "等待", p.muted),
+        Status::Running => (icon::SPINNER, "解压中", p.accent),
+        Status::Success => (icon::CHECK_CIRCLE, "成功", p.positive),
+        Status::Skipped => (icon::SKIP_FORWARD, "已跳过", p.warning),
+        Status::Failed => (icon::WARNING_CIRCLE, "失败", p.danger),
+        Status::Canceled => (icon::STOP_CIRCLE, "已停止", p.muted),
+    }
 }
 
 const fn rgb(red: u8, green: u8, blue: u8) -> Color32 {
@@ -247,32 +264,75 @@ impl InlineIcon<'_> {
         )
     }
 
-    fn paint(&self, ui: &Ui, layout: &AtomLayoutResponse, color: Color32, font: TextStyle) {
+    fn paint(
+        &self,
+        ui: &Ui,
+        layout: &AtomLayoutResponse,
+        color: Color32,
+        font: TextStyle,
+        galley: Option<&Galley>,
+    ) -> Option<Pos2> {
         let (Some(icon), Some(caption)) = (
             layout.rect(Id::new("icon")),
             layout.rect(Id::new("caption")),
         ) else {
-            return;
+            return None;
         };
         if !ui.is_rect_visible(icon) {
-            return;
+            return None;
         }
 
-        // Different font faces place their visible glyphs at different heights
-        // in the line box. Center the icon on the first painted line of text.
-        let galley = WidgetText::from(self.text.clone()).into_galley(
-            ui,
-            Some(TextWrapMode::Extend),
-            f32::INFINITY,
-            font,
-        );
+        let fallback;
+        let galley = match galley {
+            Some(galley) => galley,
+            None => {
+                fallback = WidgetText::from(self.text.clone()).into_galley(
+                    ui,
+                    Some(TextWrapMode::Extend),
+                    f32::INFINITY,
+                    font,
+                );
+                &fallback
+            }
+        };
         let mut center = icon.center();
         if let Some(line) = galley.rows.first()
             && line.row.visuals.mesh_bounds.is_positive()
         {
-            center.y = caption.top() + line.pos.y + line.row.visuals.mesh_bounds.center().y;
+            let pixels_per_point = ui.pixels_per_point();
+            let mut top = f32::INFINITY;
+            let mut bottom = f32::NEG_INFINITY;
+            // Align with the body of the first line. An extension such as .mp4
+            // should not pull the icon down with its punctuation and descenders.
+            for glyph in &line.row.glyphs {
+                if !glyph.chr.is_alphanumeric() || glyph.uv_rect.is_nothing() {
+                    continue;
+                }
+                let glyph_top =
+                    (glyph.pos.y + glyph.uv_rect.offset.y).round_to_pixels(pixels_per_point);
+                let mut glyph_bottom = glyph_top + glyph.uv_rect.size.y;
+                if glyph.chr.is_ascii_alphanumeric() {
+                    glyph_bottom = glyph_bottom.min(glyph.pos.y.round_to_pixels(pixels_per_point));
+                }
+                top = top.min(glyph_top);
+                bottom = bottom.max(glyph_bottom);
+            }
+            let line_center = if top < bottom {
+                (top + bottom) * 0.5
+            } else {
+                line.row.visuals.mesh_bounds.center().y
+            };
+            let mut caption_top = caption.top();
+            if ui
+                .ctx()
+                .tessellation_options(|options| options.round_text_to_pixels)
+            {
+                caption_top = caption_top.round_to_pixels(pixels_per_point);
+            }
+            center.y = caption_top + line.pos.y + line_center;
         }
         paint_icon(ui, center, self.symbol, self.size, color);
+        Some(center)
     }
 }
 
@@ -285,15 +345,85 @@ pub(super) fn icon_label(
     mode: TextWrapMode,
 ) -> Response {
     let content = InlineIcon { symbol, size, text };
-    let layout = AtomLayout::new(content.atoms(size))
+    let prepared = AtomLayout::new(content.atoms(size))
         .gap(6.0)
         .fallback_font(TextStyle::Body)
         .wrap_mode(mode)
-        .show(ui);
-    content.paint(ui, &layout, color, TextStyle::Body);
+        .allocate(ui);
+    let galley = prepared.sized.iter_texts().next().cloned();
+    let layout = prepared.paint(ui);
+    let _ = content.paint(ui, &layout, color, TextStyle::Body, galley.as_deref());
     layout.response.widget_info(|| {
         WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content.text.text())
     });
+    layout.response
+}
+
+pub(super) fn tree_row(
+    ui: &mut Ui,
+    p: Palette,
+    symbol: &str,
+    color: Color32,
+    text: RichText,
+    state: Option<&mut CollapsingState>,
+) -> Response {
+    let content = InlineIcon {
+        symbol,
+        size: 14.0,
+        text,
+    };
+    let indent = ui.spacing().indent;
+    // Equal columns put each icon over the next level's arrow and indent guide.
+    let (icon, caption) = content.atoms(indent);
+    let disclosure = Id::new("disclosure");
+    let slot = Atom::custom(disclosure, vec2(indent, content.size));
+    let caption_gap = Atom::default().atom_size(vec2(4.0, 0.0));
+    let mut layout = AtomLayout::new((slot, icon, caption_gap, caption))
+        .align2(Align2::LEFT_CENTER)
+        .gap(0.0)
+        .min_size(vec2(0.0, 23.0))
+        .fallback_font(TextStyle::Body)
+        .wrap_mode(TextWrapMode::Truncate);
+    if let Some(branch) = &state {
+        layout = layout.id(branch.id().with("header")).sense(Sense::click());
+    }
+    let prepared = layout.allocate(ui);
+    let galley = prepared.sized.iter_texts().next().cloned();
+    let layout = prepared.paint(ui);
+    let icon_center = content.paint(ui, &layout, color, TextStyle::Body, galley.as_deref());
+    let response = &layout.response;
+
+    if let Some(state) = state {
+        if response.clicked() {
+            state.toggle(ui);
+        }
+        if let (Some(slot), Some(icon_center)) = (layout.rect(disclosure), icon_center) {
+            let center = egui::pos2(slot.center().x, icon_center.y);
+            let angle = (state.openness(ui.ctx()) - 1.0) * std::f32::consts::FRAC_PI_2;
+            let rotation = Rot2::from_angle(angle);
+            let points = [vec2(-3.0, -1.5), vec2(0.0, 1.5), vec2(3.0, -1.5)]
+                .map(|point| center + rotation * point);
+            let color = if response.hovered() || response.has_focus() {
+                p.accent
+            } else {
+                p.muted
+            };
+            ui.painter()
+                .add(egui::Shape::line(points.to_vec(), Stroke::new(1.35, color)));
+        }
+        response.widget_info(|| {
+            let action = if state.is_open() { "收起" } else { "展开" };
+            WidgetInfo::labeled(
+                WidgetType::CollapsingHeader,
+                ui.is_enabled(),
+                format!("{action} {}", content.text.text()),
+            )
+        });
+    } else {
+        response.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), content.text.text())
+        });
+    }
     layout.response
 }
 
@@ -308,7 +438,7 @@ pub(super) fn icon_text_button<'a>(
         let content = InlineIcon { symbol, size, text };
         let layout = configure(Button::new(content.atoms(size)).gap(6.0)).atom_ui(ui);
         let color = color.unwrap_or_else(|| ui.style().interact(&layout.response).fg_stroke.color);
-        content.paint(ui, &layout, color, TextStyle::Button);
+        let _ = content.paint(ui, &layout, color, TextStyle::Button, None);
         layout.response
     }
 }
@@ -375,8 +505,140 @@ pub(super) fn icon_heading(ui: &mut Ui, symbol: &str, p: Palette, label: &str) {
     if let Some(tile) = layout.rect(Id::new("icon")) {
         ui.painter().rect_filled(tile, 11, p.accent_soft);
     }
-    content.paint(ui, &layout, p.accent, TextStyle::Body);
+    let _ = content.paint(ui, &layout, p.accent, TextStyle::Body, None);
     layout
         .response
         .widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), label));
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use egui::{RawInput, Shape, ViewportId};
+    use egui_phosphor::regular as icon;
+
+    #[test]
+    fn tree_rows_align_disclosure_and_status_columns() {
+        let ctx = Context::default();
+        configure(&ctx);
+        for scale in [1.0, 1.25, 1.75, 2.0] {
+            let mut input = RawInput::default();
+            input
+                .viewports
+                .get_mut(&ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale);
+            let mut output = ctx.run_ui(input, |ui| {
+                let p = Palette::current(ui.ctx());
+                let draw_row = |ui: &mut Ui, name: &str, state: Option<&mut CollapsingState>| {
+                    tree_row(
+                        ui,
+                        p,
+                        icon::CHECK_CIRCLE,
+                        p.positive,
+                        RichText::new(name),
+                        state,
+                    )
+                };
+                let mut branch =
+                    CollapsingState::load_with_default_open(ui.ctx(), Id::new("branch"), true);
+                let response = draw_row(ui, "项目.zip · ZIP", Some(&mut branch));
+                branch.show_body_indented(&response, ui, |ui| {
+                    let mut child =
+                        CollapsingState::load_with_default_open(ui.ctx(), Id::new("child"), false);
+                    draw_row(ui, "内层.zip · ZIP", Some(&mut child));
+                });
+                draw_row(ui, "leaf.zip · ZIP", None);
+            });
+            output.textures_delta.clear();
+            let status_centers: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    Shape::Text(text) if text.galley.text() == icon::CHECK_CIRCLE => Some(
+                        text.pos.round_to_pixels(scale)
+                            + text.galley.mesh_bounds.center().to_vec2(),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            let chevrons: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    Shape::Path(path) if path.points.len() == 3 => Some(&path.points),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(status_centers.len(), 3);
+            assert_eq!(chevrons.len(), 2);
+            let root_status = status_centers[0];
+            assert_eq!(root_status.x, status_centers[2].x);
+            let root_arrow_y = (chevrons[0][0].y + chevrons[0][1].y) * 0.5;
+            assert!((root_arrow_y - root_status.y).abs() * scale <= 0.51);
+            let child_arrow_x = (chevrons[1][0].x + chevrons[1][1].x) * 0.5;
+            assert!(
+                (child_arrow_x - root_status.x).abs() * scale <= 0.51,
+                "scale {scale}: parent status {} vs child disclosure {child_arrow_x}",
+                root_status.x
+            );
+        }
+    }
+
+    #[test]
+    fn archive_icon_centers_on_mixed_script_filename() {
+        let ctx = Context::default();
+        configure(&ctx);
+        let caption = "归档预览.mp4 · ZIP";
+        for scale in [1.0, 1.25, 1.75, 2.0] {
+            let mut input = RawInput::default();
+            input
+                .viewports
+                .get_mut(&ViewportId::ROOT)
+                .unwrap()
+                .native_pixels_per_point = Some(scale);
+            let mut output = ctx.run_ui(input, |ui| {
+                let p = Palette::current(ui.ctx());
+                icon_label(
+                    ui,
+                    icon::CHECK_CIRCLE,
+                    14.0,
+                    p.positive,
+                    RichText::new(caption).color(p.positive),
+                    TextWrapMode::Truncate,
+                );
+            });
+            output.textures_delta.clear();
+            let shape = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        Shape::Text(text) if text.galley.text() == label => Some(text),
+                        _ => None,
+                    })
+                    .unwrap()
+            };
+            let text = shape(caption);
+            let line = &text.galley.rows[0];
+            let pixel_y = |y: f32| (y * scale).round();
+            let (top, bottom) = line.row.glyphs.iter().take(4).fold(
+                (f32::INFINITY, f32::NEG_INFINITY),
+                |(top, bottom), glyph| {
+                    let glyph_top = pixel_y(glyph.pos.y + glyph.uv_rect.offset.y);
+                    (
+                        top.min(glyph_top),
+                        bottom.max(glyph_top + glyph.uv_rect.size.y * scale),
+                    )
+                },
+            );
+            let caption_center = pixel_y(text.pos.y) + line.pos.y * scale + (top + bottom) * 0.5;
+            let icon = shape(icon::CHECK_CIRCLE);
+            let icon_center = pixel_y(icon.pos.y) + icon.galley.mesh_bounds.center().y * scale;
+            assert!(
+                (caption_center - icon_center).abs() <= 1.0,
+                "scale {scale}: {caption_center} vs {icon_center}"
+            );
+        }
+    }
 }

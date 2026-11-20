@@ -1,8 +1,10 @@
+mod archive_tree;
 mod dialogs;
 mod style;
 mod workspace;
 
 use std::{
+    cell::OnceCell,
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
@@ -24,7 +26,7 @@ use crate::{
     },
 };
 
-use self::{dialogs::Settings, style::Palette};
+use self::{archive_tree::FileTree, dialogs::Settings, style::Palette};
 
 pub(crate) fn run(paths: Vec<PathBuf>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -75,6 +77,7 @@ struct Job {
     active_layer: Option<usize>,
     layers: BTreeMap<usize, Layer>,
     children: BTreeMap<Option<usize>, Vec<usize>>,
+    file_trees: BTreeMap<usize, OnceCell<FileTree>>,
     result: Option<JobResult>,
 }
 
@@ -88,6 +91,7 @@ impl Job {
             active_layer: None,
             layers: BTreeMap::new(),
             children: BTreeMap::new(),
+            file_trees: BTreeMap::new(),
             result: None,
         }
     }
@@ -98,6 +102,11 @@ impl Job {
                 .entry(layer.parent)
                 .or_default()
                 .push(layer.id);
+        }
+        if let Some(contents) = &layer.contents
+            && !contents.is_empty()
+        {
+            self.file_trees.insert(layer.id, OnceCell::new());
         }
         self.layers.insert(layer.id, layer);
     }
@@ -136,6 +145,10 @@ impl UiObserver {
 impl Observer for UiObserver {
     fn event(&mut self, event: Event) {
         self.send(WorkerMessage::Event(event));
+    }
+
+    fn wants_archive_contents(&self) -> bool {
+        true
     }
 
     fn password(&mut self, request: PasswordRequest, cancel: &AtomicBool) -> Option<PasswordReply> {

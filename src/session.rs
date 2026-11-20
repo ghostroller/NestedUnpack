@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::{Builder, TempDir};
 use zeroize::Zeroizing;
@@ -31,7 +32,15 @@ pub(crate) struct Layer {
     pub(crate) status: Status,
     pub(crate) volumes: Vec<String>,
     pub(crate) files: Option<usize>,
+    pub(crate) contents: Option<Arc<[ArchiveMember]>>,
     pub(crate) depth: usize,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ArchiveMember {
+    // Empty directories are explicit. Other directories are implied by their descendants.
+    Directory(PathBuf),
+    File(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +114,10 @@ pub(crate) enum Event {
 pub(crate) trait Observer {
     fn event(&mut self, event: Event);
     fn password(&mut self, request: PasswordRequest, cancel: &AtomicBool) -> Option<PasswordReply>;
+
+    fn wants_archive_contents(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn run_batch(
@@ -326,6 +339,7 @@ impl Session<'_> {
                 Vec::new()
             },
             files: None,
+            contents: None,
             depth: parent.map_or(1, |layer| layer.depth + 1),
         };
         self.next_layer += 1;
@@ -369,19 +383,23 @@ impl Session<'_> {
         if let Err(err) = result {
             return Err(self.layer_error(&mut layer, err));
         }
-        let files = extracted_files(stage.path())?;
+        let mut empty_directories = self.observer.wants_archive_contents().then(Vec::new);
+        let files = extracted_files(stage.path(), empty_directories.as_mut())?;
         self.check_cancel()?;
+        let count = files.len();
         let mut output = None;
         for file in &files {
             self.check_cancel()?;
             output = Some(publish(file, source, true)?);
         }
         layer.status = Status::Success;
-        layer.files = Some(files.len());
+        layer.files = Some(count);
+        layer.contents = empty_directories
+            .map(|directories| archive_contents(stage.path(), files, directories, &[]));
         self.announce(&layer);
-        self.archives = usize::from(!files.is_empty());
+        self.archives = usize::from(count > 0);
         self.depth = self.archives;
-        Ok(output.map(|path| (path, files.len())))
+        Ok(output.map(|path| (path, count)))
     }
 
     fn unpack_tree(
@@ -419,13 +437,20 @@ impl Session<'_> {
             }
             self.check_cancel()?;
             self.stage(Some(layer.id), "检查内层文件", None);
-            let files = extracted_files(directory.path())?;
+            let mut empty_directories = self.observer.wants_archive_contents().then(Vec::new);
+            let files = extracted_files(directory.path(), empty_directories.as_mut())?;
             let archives = find_nested(&files).map_err(|err| self.layer_error(&mut layer, err))?;
             let remaining = files.len()
                 - archives
                     .iter()
                     .map(|child| child.parts.len())
                     .sum::<usize>();
+            if let Some(empty) = empty_directories {
+                let contents = archive_contents(directory.path(), files, empty, &archives);
+                self.check_cancel()
+                    .map_err(|error| self.layer_error(&mut layer, error))?;
+                layer.contents = Some(contents);
+            }
             self.archives += 1;
             layer.files = Some(remaining);
             layer.status = Status::Success;
@@ -740,11 +765,41 @@ fn ordered_volumes(
     }))
 }
 
-fn extracted_files(root: &Path) -> io::Result<Vec<PathBuf>> {
+fn archive_contents(
+    root: &Path,
+    files: Vec<PathBuf>,
+    mut empty_directories: Vec<PathBuf>,
+    archives: &[SourceArchive],
+) -> Arc<[ArchiveMember]> {
+    let archive_parts: HashSet<_> = archives.iter().flat_map(|archive| &archive.parts).collect();
+    let relative = |path: PathBuf| {
+        path.strip_prefix(root)
+            .expect("walked paths are under the extraction directory")
+            .to_owned()
+    };
+    empty_directories.sort();
+    empty_directories
+        .into_iter()
+        .map(|path| ArchiveMember::Directory(relative(path)))
+        .chain(
+            files
+                .into_iter()
+                .filter(|path| !archive_parts.contains(path))
+                .map(|path| ArchiveMember::File(relative(path))),
+        )
+        .collect()
+}
+
+fn extracted_files(
+    root: &Path,
+    mut empty_directories: Option<&mut Vec<PathBuf>>,
+) -> io::Result<Vec<PathBuf>> {
     let mut directories = vec![root.to_owned()];
     let mut files = Vec::new();
     while let Some(directory) = directories.pop() {
-        for entry in fs::read_dir(directory)? {
+        let mut empty = true;
+        for entry in fs::read_dir(&directory)? {
+            empty = false;
             let entry = entry?;
             let kind = entry.file_type()?;
             #[cfg(windows)]
@@ -767,6 +822,12 @@ fn extracted_files(root: &Path) -> io::Result<Vec<PathBuf>> {
                     "不支持的解压成员类型",
                 ));
             }
+        }
+        if empty
+            && directory != root
+            && let Some(found) = empty_directories.as_deref_mut()
+        {
+            found.push(directory);
         }
     }
     files.sort();

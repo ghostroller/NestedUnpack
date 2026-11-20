@@ -1,15 +1,15 @@
 use eframe::egui::{
-    self, Align, CentralPanel, Color32, Frame, Label, Layout, Margin, Panel, RichText, ScrollArea,
-    Sense, Stroke, TextWrapMode, Theme, Ui, collapsing_header::CollapsingState, vec2,
+    self, Align, CentralPanel, Frame, Label, Layout, Margin, Panel, RichText, ScrollArea, Sense,
+    Stroke, TextWrapMode, Theme, Ui, vec2,
 };
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
 use super::{
-    App, Job, Status,
+    App, Job, Status, archive_tree,
     dialogs::Settings,
     short_path,
-    style::{self, Palette},
+    style::{self, Palette, status_style},
 };
 
 pub(super) fn show(app: &mut App, ui: &mut Ui, p: Palette) {
@@ -507,79 +507,65 @@ fn details_panel(
     let height = (height - card.total_margin().sum().y).max(0.0);
     card.show(ui, |ui| {
         ui.set_min_size(vec2(ui.available_width(), height));
+        let index = if single { Some(0) } else { app.selected }?;
+        let job = app.jobs.get(index)?;
         let mut output = None;
-        let Some(index) = (if single { Some(0) } else { app.selected }) else {
-            return output;
-        };
-        let Some(job) = app.jobs.get(index) else {
-            return output;
-        };
+
+        if !single {
+            ui.add(Label::new(RichText::new(short_path(&job.path)).size(18.0).strong()).truncate());
+        }
+        ui.add(
+            Label::new(
+                RichText::new(job.path.display().to_string())
+                    .size(12.0)
+                    .color(p.muted),
+            )
+            .truncate()
+            .selectable(true),
+        )
+        .on_hover_text(job.path.display().to_string());
+        if single {
+            single_status(app, job, ui, p);
+        }
+        if let Some(result) = &job.result
+            && let Some(path) = &result.output
+        {
+            ui.label(
+                RichText::new(format!(
+                    "{} 个文件 · {} 个压缩包 · 最深 {} 层",
+                    result.files, result.archives, result.depth
+                ))
+                .size(12.0)
+                .color(p.muted),
+            );
+            if ui
+                .add(style::button(icon::FOLDER_OPEN, "打开解压目录"))
+                .on_hover_text(path.display().to_string())
+                .clicked()
+            {
+                output = Some(path.clone());
+            }
+        }
+        ui.add_space(3.0);
+        ui.separator();
 
         ScrollArea::vertical()
             .id_salt(("archive-details", index))
             .min_scrolled_height(0.0)
-            .max_height(height)
+            .max_height(ui.available_height().max(0.0))
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                if !single {
+                if let Some(result) = &job.result
+                    && !result.detail.is_empty()
+                {
+                    let failed = job.status == Status::Failed;
+                    let color = if failed { p.danger } else { p.muted };
                     ui.add(
-                        Label::new(RichText::new(short_path(&job.path)).size(18.0).strong())
-                            .truncate(),
+                        Label::new(RichText::new(&result.detail).color(color)).selectable(failed),
                     );
                 }
-                ui.add(
-                    Label::new(
-                        RichText::new(job.path.display().to_string())
-                            .size(12.0)
-                            .color(p.muted),
-                    )
-                    .truncate()
-                    .selectable(true),
-                )
-                .on_hover_text(job.path.display().to_string());
-                if single {
-                    single_status(app, job, ui, p);
-                }
-                if let Some(result) = &job.result {
-                    if let Some(path) = &result.output {
-                        ui.label(
-                            RichText::new(format!(
-                                "{} 个文件 · {} 个压缩包 · 最深 {} 层",
-                                result.files, result.archives, result.depth
-                            ))
-                            .size(12.0)
-                            .color(p.muted),
-                        );
-                        if ui
-                            .add(style::button(icon::FOLDER_OPEN, "打开解压目录"))
-                            .on_hover_text(path.display().to_string())
-                            .clicked()
-                        {
-                            output = Some(path.clone());
-                        }
-                    }
-                    if !result.detail.is_empty() {
-                        let failed = job.status == Status::Failed;
-                        let color = if failed { p.danger } else { p.muted };
-                        ui.add(
-                            Label::new(RichText::new(&result.detail).color(color))
-                                .selectable(failed),
-                        );
-                    }
-                }
-                ui.add_space(3.0);
-                ui.separator();
-                style::icon_label(
-                    ui,
-                    icon::TREE_STRUCTURE,
-                    17.0,
-                    p.accent,
-                    RichText::new("压缩包结构").strong(),
-                    TextWrapMode::Truncate,
-                );
                 if let Some(roots) = job.children.get(&None) {
-                    for &root in roots {
-                        archive_node(ui, p, job, root);
-                    }
+                    archive_tree::show(ui, p, job, roots);
                 } else {
                     ui.label(
                         RichText::new(if matches!(job.status, Status::Pending | Status::Running) {
@@ -620,90 +606,119 @@ fn single_status(app: &App, job: &Job, ui: &mut Ui, p: Palette) {
             .on_hover_text(description.as_str());
     });
     if let Some(percent) = percent {
-        ui.add(
-            egui::ProgressBar::new(f32::from(percent) / 100.0)
-                .fill(p.accent_fill)
-                .show_percentage(),
-        );
-    }
-}
-
-fn archive_node(ui: &mut Ui, p: Palette, job: &Job, id: usize) {
-    let Some(node) = job.layers.get(&id) else {
-        return;
-    };
-    let (symbol, _, color) = status_style(p, node.status);
-    let branch = job.children.get(&Some(id));
-    let mut title = format!("{} · {}", node.name, node.format);
-    if !node.volumes.is_empty() {
-        title.push_str(&format!(" · {} 卷", node.volumes.len()));
-    }
-    let label = RichText::new(title.as_str()).color(color);
-    if branch.is_some() || !node.volumes.is_empty() {
-        let collapse_id = ui.make_persistent_id(id);
-        let mut title_clicked = false;
-        let mut header =
-            CollapsingState::load_with_default_open(ui.ctx(), collapse_id, node.depth <= 2)
-                .show_header(ui, |ui| {
-                    let response = ui
-                        .add(style::icon_text_button(
-                            symbol,
-                            14.0,
-                            Some(color),
-                            label,
-                            |button| button.frame(false).truncate(),
-                        ))
-                        .on_hover_text(title.as_str());
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::CollapsingHeader,
-                            ui.is_enabled(),
-                            title.as_str(),
-                        )
-                    });
-                    title_clicked = response.clicked();
-                });
-        if title_clicked {
-            header.toggle();
-        }
-        header.body(|ui| {
-            for volume in &node.volumes {
-                style::icon_label(
-                    ui,
-                    icon::FILE,
-                    14.0,
-                    p.muted,
-                    RichText::new(volume).color(p.muted),
-                    TextWrapMode::Truncate,
-                )
-                .on_hover_text(volume.as_str());
-            }
-            if let Some(children) = branch {
-                for &child in children {
-                    archive_node(ui, p, job, child);
-                }
-            }
-            if let Some(files) = node.files.filter(|files| *files > 0) {
-                ui.label(
-                    RichText::new(format!("{files} 个普通文件"))
-                        .size(12.0)
-                        .color(p.muted),
-                );
-            }
+        style::row(ui, 22.0, Layout::right_to_left(Align::Center), |ui| {
+            ui.add_sized(
+                [44.0, 22.0],
+                Label::new(
+                    RichText::new(format!("{percent}%"))
+                        .strong()
+                        .color(p.accent),
+                ),
+            );
+            ui.add(
+                egui::ProgressBar::new(f32::from(percent) / 100.0)
+                    .fill(p.accent_fill)
+                    .desired_height(8.0),
+            );
         });
-    } else {
-        style::icon_label(ui, symbol, 14.0, color, label, TextWrapMode::Truncate)
-            .on_hover_text(title.as_str());
     }
 }
 
-fn status_style(p: Palette, status: Status) -> (&'static str, &'static str, Color32) {
-    match status {
-        Status::Pending => (icon::CLOCK, "等待", p.muted),
-        Status::Running => (icon::SPINNER, "解压中", p.accent),
-        Status::Success => (icon::CHECK_CIRCLE, "成功", p.positive),
-        Status::Skipped => (icon::SKIP_FORWARD, "已跳过", p.warning),
-        Status::Failed => (icon::WARNING_CIRCLE, "失败", p.danger),
-        Status::Canceled => (icon::STOP_CIRCLE, "已停止", p.muted),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{JobResult, Layer};
+    use egui::{
+        Context, Event, Modifiers, MouseWheelUnit, RawInput, Rect, Shape, TouchPhase, pos2,
+    };
+
+    #[test]
+    fn scrolling_archive_tree_keeps_summary_in_place() {
+        let mut job = Job::new("demo.zip".into());
+        job.status = Status::Success;
+        job.result = Some(JobResult {
+            status: Status::Success,
+            output: Some("demo".into()),
+            detail: String::new(),
+            files: 30,
+            archives: 31,
+            depth: 2,
+        });
+        for id in 0..31 {
+            job.set_layer(Layer {
+                id,
+                parent: (id > 0).then_some(0),
+                name: format!("part-{id:02}.zip"),
+                format: "ZIP",
+                status: Status::Success,
+                volumes: Vec::new(),
+                files: None,
+                contents: None,
+                depth: if id == 0 { 1 } else { 2 },
+            });
+        }
+        let mut app = App::default();
+        app.jobs.push(job);
+        let ctx = Context::default();
+        style::configure(&ctx);
+        let mut time = 0.0;
+        let mut draw = |events| {
+            time += 0.1;
+            let mut output = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 340.0))),
+                    time: Some(time),
+                    events,
+                    ..RawInput::default()
+                },
+                |ui| {
+                    let height = ui.available_height();
+                    details_panel(&app, ui, Palette::current(ui.ctx()), height, true);
+                },
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        let bounds = |shapes: &[egui::epaint::ClippedShape], label| {
+            shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    Shape::Text(text) if text.galley.text() == label => {
+                        Some(text.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing label {label:?}"))
+        };
+        let pinned = [
+            "demo.zip",
+            "成功",
+            "30 个文件 · 31 个压缩包 · 最深 2 层",
+            "打开解压目录",
+        ];
+        let row = "part-04.zip · ZIP";
+        draw(Vec::new());
+        let before = draw(Vec::new());
+        let before_row = bounds(&before, row);
+        let wheel = |point| {
+            vec![
+                Event::PointerMoved(point),
+                Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: vec2(0.0, -45.0),
+                    phase: TouchPhase::Move,
+                    modifiers: Modifiers::NONE,
+                },
+            ]
+        };
+        draw(wheel(bounds(&before, "demo.zip").center()));
+        assert_eq!(before_row, bounds(&draw(Vec::new()), row));
+
+        draw(wheel(before_row.center()));
+        let scrolled = draw(Vec::new());
+        assert!(bounds(&scrolled, row).top() < before_row.top());
+        for label in pinned {
+            assert_eq!(bounds(&before, label), bounds(&scrolled, label));
+        }
     }
 }

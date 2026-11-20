@@ -8,6 +8,7 @@ use super::*;
 struct Recorder {
     events: Vec<Event>,
     password: Option<&'static str>,
+    watch_contents: bool,
 }
 
 impl Recorder {
@@ -36,15 +37,25 @@ impl Observer for Recorder {
             remember: false,
         })
     }
+
+    fn wants_archive_contents(&self) -> bool {
+        self.watch_contents
+    }
 }
 
 fn zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
-    for (name, data) in entries {
-        archive
-            .start_file(name, SimpleFileOptions::default())
-            .unwrap();
-        archive.write_all(data).unwrap();
+    for &(name, data) in entries {
+        if name.ends_with('/') {
+            archive
+                .add_directory(name, SimpleFileOptions::default())
+                .unwrap();
+        } else {
+            archive
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(data).unwrap();
+        }
     }
     archive.finish().unwrap().into_inner()
 }
@@ -102,6 +113,90 @@ fn preserves_siblings_and_never_overwrites_an_existing_result() {
             .iter()
             .any(|event| matches!(event, Event::Archive { node, .. } if
         node.name == "leaf.zip" && node.depth == 3 && node.status == Status::Success))
+    );
+    assert!(
+        !observer
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Archive { node, .. } if node.contents.is_some()))
+    );
+}
+
+#[test]
+fn reports_ordinary_paths_and_empty_directories_per_archive() {
+    let working = tempfile::tempdir().unwrap();
+    let source = working.path().join("示例.zip");
+    let nested_zip = zip(&[("文件/明细.txt", b"details"), ("空目录/", b"")]);
+    let parts: Vec<_> = include_bytes!("../../testdata/encrypted-inner.7z")
+        .chunks(120)
+        .enumerate()
+        .map(|(index, data)| (format!("资料.7z.{:03}", index + 1), data))
+        .collect();
+    let mut entries = vec![
+        ("阅读说明.txt", b"read me".as_slice()),
+        ("文档/原始稿.txt", b"draft".as_slice()),
+        ("文档/空目录/二级/", b"".as_slice()),
+        ("文档/附录.zip", nested_zip.as_slice()),
+    ];
+    entries.extend(parts.iter().map(|(name, data)| (name.as_str(), *data)));
+    fs::write(&source, zip(&entries)).unwrap();
+
+    let mut observer = Recorder {
+        password: Some("nestedunpack-regression-only"),
+        watch_contents: true,
+        ..Default::default()
+    };
+    let cancel = AtomicBool::new(false);
+    let (output, count) = observer
+        .session(&cancel)
+        .extract_source(&source)
+        .unwrap()
+        .unwrap();
+    assert_eq!(count, 4);
+    assert!(output.join("文档/空目录/二级").is_dir());
+
+    let mut layers = HashMap::new();
+    for event in &observer.events {
+        if let Event::Archive { node, .. } = event {
+            if node.status == Status::Success {
+                layers.insert(node.name.as_str(), node);
+            } else {
+                assert!(node.contents.is_none());
+            }
+        }
+    }
+    assert_eq!(layers.len(), 4);
+    let root = layers["示例.zip"];
+    assert_eq!(root.files, Some(2));
+    assert_eq!(
+        root.contents.as_deref().unwrap(),
+        [
+            ArchiveMember::Directory("文档/空目录/二级".into()),
+            ArchiveMember::File("文档/原始稿.txt".into()),
+            ArchiveMember::File("阅读说明.txt".into()),
+        ]
+    );
+    let child = layers
+        .values()
+        .find(|node| Path::new(&node.name) == Path::new("文档/附录.zip"))
+        .unwrap();
+    assert_eq!(child.parent, Some(root.id));
+    assert_eq!(
+        child.contents.as_deref().unwrap(),
+        [
+            ArchiveMember::Directory("空目录".into()),
+            ArchiveMember::File("文件/明细.txt".into()),
+        ]
+    );
+    let split = layers["资料.7z"];
+    assert_eq!(split.parent, Some(root.id));
+    assert_eq!(split.volumes.len(), parts.len());
+    assert!(split.contents.as_deref().unwrap().is_empty());
+    let inner = layers["inner.zip"];
+    assert_eq!(inner.parent, Some(split.id));
+    assert_eq!(
+        inner.contents.as_deref().unwrap(),
+        [ArchiveMember::File("media/detail.txt".into())]
     );
 }
 

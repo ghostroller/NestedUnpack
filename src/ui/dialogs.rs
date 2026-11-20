@@ -246,16 +246,25 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
                         .max_height(140.0)
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 3.0;
-                            ui.visuals_mut().widgets.noninteractive.bg_stroke =
-                                egui::Stroke::new(1.0, p.line);
+                            let widgets = &mut ui.visuals_mut().widgets;
+                            widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.line);
+                            widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
                             for (index, password) in book.values.iter().enumerate() {
                                 if index > 0 {
                                     ui.add(egui::Separator::default().spacing(1.0));
                                 }
+                                let selected = book.selected == Some(index);
+                                // Keep the stroke width in the layout even when it is invisible.
+                                ui.visuals_mut().widgets.inactive.bg_stroke.color = if selected {
+                                    p.line
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
                                 let row = Button::selectable(
-                                    book.selected == Some(index),
+                                    selected,
                                     (password.as_str(), egui::Atom::grow()),
                                 )
+                                .frame_when_inactive(true)
                                 .min_size(vec2(ui.available_width(), 30.0))
                                 .wrap();
                                 if ui.add(row).clicked() {
@@ -404,4 +413,70 @@ fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
 fn title(ui: &mut Ui, p: Palette, symbol: &str, label: &str) {
     style::icon_heading(ui, symbol, p, label);
     ui.add_space(3.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Event, RawInput, Rect, Shape, Theme, pos2};
+
+    #[test]
+    fn password_rows_keep_their_layout_on_hover() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let ctx = Context::default();
+            style::configure(&ctx);
+            ctx.set_theme(theme);
+            let first = "first-example";
+            let second = "long-example-".repeat(12);
+            let mut book = Book::default();
+            book.values = vec![first.into(), second.clone()];
+            book.selected = Some(1);
+            let mut time = 0.0;
+            let mut draw = |events| {
+                time += 0.1;
+                let mut output = ctx.run_ui(
+                    RawInput {
+                        screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 550.0))),
+                        time: Some(time),
+                        events,
+                        ..RawInput::default()
+                    },
+                    |ui| {
+                        show_book(&mut book, ui.ctx(), Palette::current(ui.ctx()));
+                    },
+                );
+                output.textures_delta.clear();
+                output.shapes
+            };
+            let geometry = |shapes: &[egui::epaint::ClippedShape]| {
+                [first, &second, "添加密码"].map(|label| {
+                    shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            Shape::Text(text) if text.galley.text() == label => {
+                                Some(text.visual_bounding_rect())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("missing label {label:?}"))
+                })
+            };
+            for _ in 0..3 {
+                draw(Vec::new());
+            }
+            let idle = geometry(&draw(Vec::new()));
+            for row in &idle[..2] {
+                let pointer = row.center_top() + vec2(0.0, 5.0);
+                let hovered = draw(vec![Event::PointerMoved(pointer)]);
+                let p = Palette::current(&ctx);
+                assert!(hovered.iter().any(|shape| {
+                    matches!(&shape.shape, Shape::Rect(rect)
+                        if rect.rect.contains(pointer) && rect.stroke.color == p.accent
+                            && rect.fill == p.accent_soft)
+                }));
+                assert_eq!(idle, geometry(&hovered), "{theme:?}");
+            }
+            assert_eq!(idle, geometry(&draw(vec![Event::PointerGone])), "{theme:?}");
+        }
+    }
 }
