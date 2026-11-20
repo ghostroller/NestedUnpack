@@ -215,7 +215,7 @@ type nativeNestedUI struct {
 	batch, source, layer, archive uintptr
 	stage, progress, marquee      uintptr
 	section, list, details        uintptr
-	treeTitle, tree, treeEmpty    uintptr
+	treeTitle, tree               uintptr
 	open, close                   uintptr
 	dpi                           uint32
 	fonts                         [3]uintptr
@@ -335,7 +335,7 @@ func (ui *nativeNestedUI) create(total int) error {
 		hidden              bool
 	}{
 		{&ui.batch, "STATIC", fmt.Sprintf("已处理 0 / %d 个文件", total), 0x4000, 0, 0, false},
-		{&ui.source, "STATIC", "正在准备文件…", 0x4000 | 0x0080, 0, 0, false}, // SS_ENDELLIPSIS | SS_NOPREFIX
+		{&ui.source, "STATIC", "", 0x4000 | 0x0080, 0, 0, false}, // SS_ENDELLIPSIS | SS_NOPREFIX
 		{&ui.layer, "STATIC", "", 0x4000, 0, 0, false},
 		{&ui.archive, "STATIC", "", 0x4000 | 0x0080, 0, 0, false},
 		{&ui.stage, "STATIC", "", 0x4000, 0, 0, false},
@@ -344,8 +344,7 @@ func (ui *nativeNestedUI) create(total int) error {
 		{&ui.section, "STATIC", "处理结果", 0, 0, 0, false},
 		{&ui.list, "LISTBOX", "", guiWSBorder | guiWSVScroll | guiWSTabStop | 0x0101, 0, guiResults, false}, // LBS_NOTIFY | LBS_NOINTEGRALHEIGHT
 		{&ui.treeTitle, "STATIC", "压缩包结构", 0, 0, 0, false},
-		{&ui.tree, "SysTreeView32", "", guiWSBorder | guiWSTabStop | guiTVSStyle, 0, 0, true},
-		{&ui.treeEmpty, "STATIC", "等待查看压缩包结构", guiWSBorder | 0x0201, 0, 0, false},                 // SS_CENTER | SS_CENTERIMAGE
+		{&ui.tree, "SysTreeView32", "", guiWSBorder | guiWSTabStop | guiTVSStyle, 0, 0, false},
 		{&ui.details, "EDIT", "", guiWSBorder | guiWSVScroll | guiWSTabStop | 0x844, 0, 0, false}, // ES_READONLY | ES_AUTOVSCROLL | ES_MULTILINE
 		{&ui.open, "BUTTON", "打开解压目录", guiWSTabStop, 0, guiOpen, false},
 		{&ui.close, "BUTTON", "取消解压", guiWSTabStop, 0, guiClose, false},
@@ -437,7 +436,7 @@ func (ui *nativeNestedUI) applyFonts() {
 	stock, _, _ := guiGetStockObject.Call(17) // DEFAULT_GUI_FONT
 	for index, controls := range [3][]uintptr{
 		{ui.batch},
-		{ui.source, ui.layer, ui.stage, ui.list, ui.tree, ui.treeEmpty, ui.details, ui.open, ui.close},
+		{ui.source, ui.layer, ui.stage, ui.list, ui.tree, ui.details, ui.open, ui.close},
 		{ui.archive, ui.section, ui.treeTitle},
 	} {
 		font := ui.fonts[index]
@@ -492,7 +491,6 @@ func (ui *nativeNestedUI) layout() {
 	position(ui.treeTitle, treeLeft, resultsHeading, treeWidth, scale(21))
 	position(ui.list, margin, resultsTop, listWidth, resultsHeight)
 	position(ui.tree, treeLeft, resultsTop, treeWidth, treeHeight)
-	position(ui.treeEmpty, treeLeft, resultsTop, treeWidth, treeHeight)
 	position(ui.details, treeLeft, resultsTop+treeHeight+panelGap, treeWidth, resultsHeight-treeHeight-panelGap)
 	closeLeft := max(margin, client.Right-margin-buttonWidth)
 	openWidth := scale(140)
@@ -530,7 +528,7 @@ func (ui *nativeNestedUI) render(event nestedEvent) {
 	case "source":
 		ui.total = event.Total
 		ui.updateBatch()
-		guiText(ui.source, fmt.Sprintf("当前文件 %d / %d  ·  %s", event.Index, event.Total, filepath.Base(event.Source)))
+		guiText(ui.source, filepath.Base(event.Source))
 		ui.showLayer("", "")
 		ui.showStage("正在识别压缩格式", guiProgressBusy, 0)
 		ui.activeRow = ui.addResult(event)
@@ -563,7 +561,7 @@ func (ui *nativeNestedUI) render(event nestedEvent) {
 
 func guiLayerDescription(event nestedEvent) (description, archive string) {
 	if event.ArchiveIndex != 0 {
-		description = fmt.Sprintf("第 %d 层 · 第 %d 个压缩包", event.Depth, event.ArchiveIndex)
+		description = fmt.Sprintf("第 %d 层", event.Depth)
 		if event.Archive != "" {
 			if event.Archive == event.Source {
 				archive = "外层压缩包"
@@ -580,9 +578,9 @@ func guiLayerDescription(event nestedEvent) (description, archive string) {
 	}
 	if event.ArchivesDiscovered > 0 {
 		if description != "" {
-			description += "    "
+			description += " · "
 		}
-		description += fmt.Sprintf("已解开 %d 个，已发现 %d 个", event.ArchivesCompleted, event.ArchivesDiscovered)
+		description += fmt.Sprintf("已解开 %d · 已发现 %d", event.ArchivesCompleted, event.ArchivesDiscovered)
 	}
 	return description, archive
 }
@@ -601,7 +599,7 @@ func (ui *nativeNestedUI) showLayer(description, archive string) {
 func (ui *nativeNestedUI) showStage(stage string, mode guiProgressMode, percent int) {
 	if mode == guiProgressMeasured {
 		percent = min(100, max(0, percent))
-		stage += fmt.Sprintf("  ·  本步骤 %d%%", percent)
+		stage += fmt.Sprintf(" · %d%%", percent)
 		guiSendMessage.Call(ui.progress, guiPBSetPos, uintptr(percent), 0)
 	}
 	guiText(ui.stage, stage)
@@ -648,22 +646,19 @@ func guiResultStatus(event nestedEvent) string {
 }
 
 func guiResultDetails(event nestedEvent) string {
+	if event.Kind == "source" {
+		return event.Source
+	}
 	var lines []string
 	if event.Source != "" {
 		lines = append(lines, event.Source, "")
 	}
-	if event.Kind == "source" {
-		lines = append(lines, "正在处理，压缩包结构会随解压更新。")
-	} else if event.Output != "" {
+	if event.Output != "" {
 		lines = append(lines, "解压目录", event.Output, "",
-			fmt.Sprintf("写出 %d 个文件 · 解开 %d 个压缩包 · 最深 %d 层",
+			fmt.Sprintf("%d 个文件 · %d 个压缩包 · 最深 %d 层",
 				event.FilesWritten, event.ArchivesCompleted, event.MaxDepth))
 	} else {
 		lines = append(lines, event.Message)
-		if event.Kind == "result" && event.ArchivesCompleted > 0 {
-			lines = append(lines, "", fmt.Sprintf("中止前已解开 %d 个压缩包 · 最深到达第 %d 层",
-				event.ArchivesCompleted, event.MaxDepth))
-		}
 	}
 	text := strings.ReplaceAll(strings.Join(lines, "\n"), "\r\n", "\n")
 	return strings.ReplaceAll(text, "\n", "\r\n")
@@ -797,29 +792,23 @@ func (ui *nativeNestedUI) showResultTree(row int) {
 	clear(ui.treeItems)
 	clear(ui.treeTail)
 	clear(ui.treeExpanded)
-	empty := "暂无压缩包结构"
-	if row >= 0 {
-		entry := &ui.results[row]
-		if entry.event.Kind == "source" {
-			for _, node := range entry.live {
-				ui.updateArchiveTree(node, true, true)
-			}
-			empty = "等待识别压缩包"
-		} else if root := entry.event.Structure; root != nil {
-			ui.insertArchiveBranch(root, nil)
-			for node, depth := root, 0; node != nil && depth < 3; depth++ {
-				ui.expandArchiveTree(ui.treeItems[node.ID])
-				if len(node.Children) != 1 {
-					break
-				}
-				node = node.Children[0]
-			}
-		}
+	if row < 0 {
+		return
 	}
-	if len(ui.treeItems) == 0 {
-		guiShowWindow.Call(ui.tree, 0) // SW_HIDE
-		guiText(ui.treeEmpty, empty)
-		guiShowWindow.Call(ui.treeEmpty, 4) // SW_SHOWNOACTIVATE
+	entry := &ui.results[row]
+	if entry.event.Kind == "source" {
+		for _, node := range entry.live {
+			ui.updateArchiveTree(node, true, true)
+		}
+	} else if root := entry.event.Structure; root != nil {
+		ui.insertArchiveBranch(root, nil)
+		for node, depth := root, 0; node != nil && depth < 3; depth++ {
+			ui.expandArchiveTree(ui.treeItems[node.ID])
+			if len(node.Children) != 1 {
+				break
+			}
+			node = node.Children[0]
+		}
 	}
 }
 
@@ -839,9 +828,9 @@ func (ui *nativeNestedUI) insertArchiveBranch(node *archiveStructure, previous *
 }
 
 func guiArchiveTreeLabel(node *archiveStructure, running bool) string {
-	label := node.Name + " · " + node.Format
+	label := node.Name + " · " + strings.TrimSuffix(node.Format, " 分卷")
 	if len(node.Volumes) > 0 {
-		label += fmt.Sprintf(" · %d 个分卷", len(node.Volumes))
+		label += fmt.Sprintf(" · %d 卷", len(node.Volumes))
 	}
 	switch node.Status {
 	case "active":
@@ -885,10 +874,7 @@ func (ui *nativeNestedUI) updateArchiveTree(node *archiveStructure, running, exp
 	for _, volume := range node.Volumes {
 		ui.insertTreeItem(item, filepath.Base(volume))
 	}
-	if parent == 0 {
-		guiShowWindow.Call(ui.treeEmpty, 0)
-		guiShowWindow.Call(ui.tree, 4)
-	} else if expandParent && !ui.treeExpanded[parent] {
+	if parent != 0 && expandParent && !ui.treeExpanded[parent] {
 		ui.expandArchiveTree(parent)
 	}
 }
@@ -1003,9 +989,9 @@ func guiWndProc(window, message, wParam, lParam uintptr) uintptr {
 			return 0
 		case guiWMColor:
 			if lParam == ui.batch || lParam == ui.source || lParam == ui.layer || lParam == ui.archive ||
-				lParam == ui.stage || lParam == ui.section || lParam == ui.treeTitle || lParam == ui.treeEmpty || lParam == ui.details {
+				lParam == ui.stage || lParam == ui.section || lParam == ui.treeTitle || lParam == ui.details {
 				color := uintptr(8) // COLOR_WINDOWTEXT
-				if lParam == ui.stage || lParam == ui.treeEmpty {
+				if lParam == ui.stage {
 					color = 17 // COLOR_GRAYTEXT
 				}
 				text, _, _ := guiGetSysColor.Call(color)
@@ -1099,26 +1085,22 @@ func (ui *nativeNestedUI) RequestPassword(ctx context.Context, request passwordR
 }
 
 func (ui *nativeNestedUI) askPassword(request passwordRequest) (passwordReply, error) {
-	ui.showStage("等待输入密码", guiProgressHidden, 0)
-	prompt := "请输入压缩包密码。"
+	var notice string
 	if request.Retry {
-		prompt = "密码验证未通过，请重新输入。"
+		notice = "密码验证未通过，请重试"
 	}
 	archive := filepath.Base(request.Archive)
 	if request.Archive == "" {
 		archive = filepath.Base(request.Source)
 	}
 	subtitle := fmt.Sprintf("第 %d 层 · %s · %s", request.Depth, request.Format, archive)
-	template := guiPasswordTemplate(prompt, subtitle)
+	template := guiPasswordTemplate(notice, subtitle)
 	result, _, err := guiDialogBox.Call(ui.instance, uintptr(unsafe.Pointer(&template[0])), ui.window, guiDlgCallback, 0)
 	runtime.KeepAlive(template)
 	reply := ui.password
 	ui.password = passwordReply{}
 	if int32(result) == -1 {
 		return passwordReply{}, fmt.Errorf("无法打开密码输入窗口：%w", err)
-	}
-	if reply.Value != "" {
-		ui.showStage("验证输入的密码", guiProgressBusy, 0)
 	}
 	return reply, nil
 }
@@ -1156,7 +1138,7 @@ func guiPasswordProc(window, message, wParam, _ uintptr) uintptr {
 
 // The dialog manager handles focus, tab navigation, Enter and Escape for this
 // native DLGTEMPLATE, so it behaves like a dialog compiled from a .rc file.
-func guiPasswordTemplate(prompt, subtitle string) []uint16 {
+func guiPasswordTemplate(notice, subtitle string) []uint16 {
 	const style = 0x80000000 | guiWSCaption | guiWSSysMenu | 0x08c0 // WS_POPUP | DS_CENTER | DS_SETFONT | DS_MODALFRAME
 	template := []uint16{}
 	appendDword := func(value uint32) { template = append(template, uint16(value), uint16(value>>16)) }
@@ -1166,7 +1148,13 @@ func guiPasswordTemplate(prompt, subtitle string) []uint16 {
 	}
 	appendDword(style)
 	appendDword(0)
-	template = append(template, 6, 0, 0, 344, 143, 0, 0)
+	var noticeHeight uint16
+	controlCount := uint16(5)
+	if notice != "" {
+		noticeHeight = 21
+		controlCount++
+	}
+	template = append(template, controlCount, 0, 0, 344, 122+noticeHeight, 0, 0)
 	appendText("压缩包密码")
 	template = append(template, 10) // DS_SETFONT point size
 	appendText("Segoe UI")
@@ -1180,12 +1168,14 @@ func guiPasswordTemplate(prompt, subtitle string) []uint16 {
 		appendText(text)
 		template = append(template, 0) // no control creation data
 	}
-	add(0, 0, 15, 15, 314, 15, 0xffff, 0x0082, prompt) // STATIC
-	add(0x4000, 0, 15, 36, 314, 15, 0xffff, 0x0082, subtitle)
-	add(guiWSTabStop|0x00a0, guiWSClientEdge, 15, 58, 314, 19, guiPassword, 0x0081, "") // EDIT | ES_PASSWORD | ES_AUTOHSCROLL
-	add(guiWSTabStop|3, 0, 15, 86, 314, 14, guiRemember, 0x0080, "密码正确时保存到密码簿")         // BS_AUTOCHECKBOX
-	add(guiWSTabStop, 0, 154, 111, 87, 21, guiCancel, 0x0080, "跳过当前文件")
-	add(guiWSTabStop|1, 0, 249, 111, 80, 21, guiOK, 0x0080, "确定")
+	if notice != "" {
+		add(0, 0, 15, 15, 314, 15, 0xffff, 0x0082, notice) // STATIC
+	}
+	add(0x4000, 0, 15, 15+noticeHeight, 314, 15, 0xffff, 0x0082, subtitle)
+	add(guiWSTabStop|0x00a0, guiWSClientEdge, 15, 37+noticeHeight, 314, 19, guiPassword, 0x0081, "") // EDIT | ES_PASSWORD | ES_AUTOHSCROLL
+	add(guiWSTabStop|3, 0, 15, 65+noticeHeight, 314, 14, guiRemember, 0x0080, "密码正确时保存到密码簿")         // BS_AUTOCHECKBOX
+	add(guiWSTabStop, 0, 154, 90+noticeHeight, 87, 21, guiCancel, 0x0080, "跳过当前文件")
+	add(guiWSTabStop|1, 0, 249, 90+noticeHeight, 80, 21, guiOK, 0x0080, "确定")
 	return template
 }
 
