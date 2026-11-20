@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-pub(crate) const THIRD_PARTY_NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES-RUST.txt");
+pub(crate) const THIRD_PARTY_NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
 
 fn main() {
     let code = run(std::env::args_os().skip(1).collect());

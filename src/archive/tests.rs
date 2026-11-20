@@ -102,12 +102,42 @@ fn extracts_appended_zip64_with_trailing_data() {
 }
 
 #[test]
-fn extracts_appended_winzip_aes_and_retries() {
+fn extracts_appended_winzip_aes256_and_retries() {
+    assert_appended_winzip_aes_extracts(include_bytes!("../../testdata/aes256.zip"));
+}
+
+#[test]
+fn extracts_appended_winzip_aes128_stored_ae1_and_retries() {
+    let mut archive = include_bytes!("../../testdata/aes128-store.zip").to_vec();
+    let eocd = archive.len() - 22;
+    assert_eq!(&archive[eocd..eocd + 4], b"PK\x05\x06");
+    let directory = u32::from_le_bytes(archive[eocd + 16..eocd + 20].try_into().unwrap()) as usize;
+    let (local, central) = archive.split_at_mut(directory);
+    assert_eq!(&local[..4], b"PK\x03\x04");
+    assert_eq!(&central[..4], b"PK\x01\x02");
+
+    // AE-1 uses the same ciphertext as AE-2, but stores the plaintext CRC32
+    // in the local and central headers. Match the fixture's AES128/Store extra.
+    let ae2_extra = b"\x01\x99\x07\x00\x02\x00AE\x01\x00\x00";
+    let crc = 0xbad3_2194_u32.to_le_bytes();
+    for (header, crc_offset) in [(local, 14), (central, 16)] {
+        let aes_extra = header
+            .windows(ae2_extra.len())
+            .position(|extra| extra == ae2_extra)
+            .unwrap();
+        header[aes_extra + 4..aes_extra + 6].copy_from_slice(&1_u16.to_le_bytes());
+        header[crc_offset..crc_offset + 4].copy_from_slice(&crc);
+    }
+
+    assert_appended_winzip_aes_extracts(&archive);
+}
+
+fn assert_appended_winzip_aes_extracts(archive: &[u8]) {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("encrypted.mp4");
     let dest = temp.path().join("out");
     let mut media = b"\0\0\0\x18ftypmp42".to_vec();
-    media.extend_from_slice(include_bytes!("../../testdata/aes256.zip"));
+    media.extend_from_slice(archive);
     fs::write(&path, media).unwrap();
     let mut control = TestControl {
         replies: VecDeque::from(["incorrect", PASSWORD]),
