@@ -62,7 +62,6 @@ func (summary batchSummary) exitCode() int {
 type unpackSession struct {
 	ctx            context.Context
 	ui             nestedUI
-	sevenZip       string
 	recentPassword string
 	book           *passwordBook
 	copyBuffer     []byte
@@ -167,36 +166,8 @@ func (session *unpackSession) tryPasswords(layer nestedEvent, wrongPassword erro
 	}
 }
 
-func (session *unpackSession) unpackUsing7Zip(layer nestedEvent, dest, work string, progress func(int)) error {
-	if session.sevenZip == "" {
-		var err error
-		session.sevenZip, err = find7Zip()
-		if err != nil {
-			return err
-		}
-	}
-	archive := layer.Archive
-	if layer.Format == "ZIP" {
-		var err error
-		archive, err = session.prepareEncryptedZip(layer, work)
-		if err != nil {
-			return err
-		}
-		if archive != layer.Archive {
-			defer os.Remove(archive)
-		}
-	}
-	if layer.Format == "ZIP" {
-		session.stage(layer, "读取压缩包目录", -1)
-	}
-	return unpackWith7Zip(session.ctx, session.sevenZip, archive, dest, func(attempt func(string) error) error {
-		return session.tryPasswords(layer, err7ZipPassword, true, attempt)
-	}, progress)
-}
-
-func (session *unpackSession) unpack(item *nestedEvent, kind string) (string, error) {
+func (session *unpackSession) unpack(item *nestedEvent, root nestedArchive) (string, error) {
 	item.ArchivesDiscovered = 1
-	root := nestedArchive{Path: item.Source, Kind: kind}
 	structure := describeArchive(root, "", 1, 0)
 	// Publish the tree with the result, after its nodes stop changing.
 	defer func() { item.Structure = structure }()
@@ -215,7 +186,7 @@ func (session *unpackSession) unpack(item *nestedEvent, kind string) (string, er
 		return "", err
 	}
 	session.sourceStage(*item, "写入解压结果")
-	output, err := publishDirectory(session.ctx, result.path, item.Source)
+	output, err := publishDirectory(session.ctx, result.path, archiveOutputSource(root))
 	if err != nil {
 		return "", fmt.Errorf("写出解压目录 · %w", err)
 	}
@@ -293,11 +264,15 @@ func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive
 			return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, err))
 		}
 		progress := session.progress(layer, "解压当前压缩包")
-		if archive.Kind == "ZIP" {
+		switch archive.Kind {
+		case "ZIP":
 			err = session.unpackZipLayer(layer, dest, progress)
-		}
-		if archive.Kind != "ZIP" || errors.Is(err, errZipNeeds7Zip) {
-			err = session.unpackUsing7Zip(layer, dest, work, progress)
+		case "RAR":
+			err = session.unpackRARLayer(layer, dest, progress)
+		case "7z", "7z 分卷":
+			err = session.unpack7ZipLayer(layer, archive, dest, progress)
+		default:
+			err = fmt.Errorf("不支持的压缩包格式 %q", archive.Kind)
 		}
 		if err != nil {
 			return unpackedDirectory{}, session.stopArchive(layer, node, layerError(layer, err))
@@ -343,13 +318,7 @@ func (session *unpackSession) unpackTree(item *nestedEvent, work string, archive
 				return unpackedDirectory{}, err
 			}
 			session.sourceStage(*item, "整理已解出的内层文件")
-			outputName := child.Path
-			if child.Kind == "7z 分卷" {
-				if base, _, ok := splitVolumeName(child.Path); ok && strings.EqualFold(filepath.Ext(base), ".7z") {
-					outputName = base
-				}
-			}
-			if _, err := publishDirectory(session.ctx, result.path, outputName); err != nil {
+			if _, err := publishDirectory(session.ctx, result.path, archiveOutputSource(child)); err != nil {
 				return unpackedDirectory{}, fmt.Errorf("写出内层压缩包 %q · %w", filepath.Base(child.Path), err)
 			}
 			for _, part := range child.Parts {
@@ -387,6 +356,9 @@ func executeNested(ctx context.Context, paths []string, ui nestedUI) batchSummar
 			continue
 		}
 		key := strings.ToLower(path)
+		if base, _, ok := splitVolumeName(path); ok && strings.EqualFold(filepath.Ext(base), ".7z") {
+			key = strings.ToLower(base + ".001")
+		}
 		if !seen[key] {
 			seen[key] = true
 			jobs = append(jobs, job{path, nil})
@@ -402,13 +374,14 @@ func executeNested(ctx context.Context, paths []string, ui nestedUI) batchSummar
 		item := nestedEvent{Kind: "source", Source: job.path, Index: index + 1, Total: len(jobs), Percent: -1}
 		ui.Update(item)
 		err := job.err
-		var kind, output string
+		var archive nestedArchive
+		var output string
 		if err == nil {
-			kind, err = detectArchive(job.path)
+			archive, err = findSourceArchive(job.path)
 		}
-		if err == nil && kind != "" {
-			item.Format = kind
-			output, err = session.unpack(&item, kind)
+		if err == nil && archive.Kind != "" {
+			item.Format = archive.Kind
+			output, err = session.unpack(&item, archive)
 		}
 
 		item.Kind, item.Output = "result", output
@@ -422,7 +395,7 @@ func executeNested(ctx context.Context, paths []string, ui nestedUI) batchSummar
 		case err != nil:
 			summary.Failed++
 			item.Status, item.Message = "failed", err.Error()
-		case kind == "":
+		case archive.Kind == "":
 			summary.Skipped++
 			item.Status, item.Message = "skipped", "无法识别为 ZIP、RAR 或 7z"
 		default:

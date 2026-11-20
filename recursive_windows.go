@@ -34,6 +34,41 @@ func splitVolumeName(path string) (base string, index int, ok bool) {
 	return strings.TrimSuffix(path, extension), index, true
 }
 
+func findSourceArchive(path string) (nestedArchive, error) {
+	base, selected, volume := splitVolumeName(path)
+	if !volume || !strings.EqualFold(filepath.Ext(base), ".7z") {
+		kind, err := detectArchive(path)
+		return nestedArchive{Path: path, Kind: kind}, err
+	}
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nestedArchive{}, err
+	}
+	var parts []numberedVolume
+	found := false
+	for _, entry := range entries {
+		candidate, index, ok := splitVolumeName(entry.Name())
+		if ok && strings.EqualFold(candidate, filepath.Base(base)) {
+			parts = append(parts, numberedVolume{path: filepath.Join(dir, entry.Name()), index: index})
+			found = found || selected == index
+		}
+	}
+	if !found {
+		return nestedArchive{}, &os.PathError{Op: "读取分卷", Path: path, Err: os.ErrNotExist}
+	}
+	return find7ZipVolumes(base, parts)
+}
+
+func archiveOutputSource(archive nestedArchive) string {
+	if archive.Kind == "7z 分卷" {
+		if base, _, ok := splitVolumeName(archive.Path); ok && strings.EqualFold(filepath.Ext(base), ".7z") {
+			return base
+		}
+	}
+	return archive.Path
+}
+
 func findNestedArchives(files []string) ([]nestedArchive, error) {
 	groups := make(map[string][]numberedVolume)
 	for _, path := range files {

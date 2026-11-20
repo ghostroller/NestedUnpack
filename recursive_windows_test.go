@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,27 +15,12 @@ import (
 )
 
 func TestRecursiveSplitArchiveWithDocument(t *testing.T) {
-	sevenZip, err := find7Zip()
-	if err != nil {
-		t.Skip(err)
-	}
+	t.Setenv("PATH", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	work := t.TempDir()
 	const password = "nestedunpack-regression-only"
 	deepPayload := bytes.Repeat([]byte("nested media payload\n"), 600)
-	inner := makeRecursiveTestZip(t, map[string][]byte{"media/detail.txt": deepPayload})
-	if err := os.WriteFile(filepath.Join(work, "inner.zip"), inner, 0600); err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command(sevenZip, "a", "-t7z", "-mx=0", "-mhe=on", "-p"+password, "-v8k", "10241.7z", "inner.zip")
-	command.Dir = work
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("creating test volumes: %v\n%s", err, output)
-	}
-	volumes, err := filepath.Glob(filepath.Join(work, "10241.7z.*"))
-	if err != nil || len(volumes) < 2 {
-		t.Fatalf("creating %d test volumes: %v", len(volumes), err)
-	}
+	volumes := test7ZipVolumes(t)
 	epub := makeRecursiveTestZip(t, map[string][]byte{"mimetype": []byte("application/epub+zip")})
 	members := map[string][]byte{
 		"10241/巨龙的时空.epub": epub,
@@ -44,12 +28,8 @@ func TestRecursiveSplitArchiveWithDocument(t *testing.T) {
 			"side.txt": []byte("another branch"),
 		}),
 	}
-	for _, volume := range volumes {
-		payload, err := os.ReadFile(volume)
-		if err != nil {
-			t.Fatal(err)
-		}
-		members["10241/"+filepath.Base(volume)] = payload
+	for index, volume := range volumes {
+		members[fmt.Sprintf("10241/10241.7z.%03d", index+1)] = volume
 	}
 	// Append the archive to an MP4-style header, with ZIP-relative offsets.
 	prefix := []byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}
@@ -66,8 +46,8 @@ func TestRecursiveSplitArchiveWithDocument(t *testing.T) {
 	}
 
 	volumeNames := make([]string, 0, len(volumes))
-	for _, volume := range volumes {
-		volumeNames = append(volumeNames, filepath.Join("10241", filepath.Base(volume)))
+	for index := range volumes {
+		volumeNames = append(volumeNames, filepath.Join("10241", fmt.Sprintf("10241.7z.%03d", index+1)))
 	}
 	splitName := filepath.Join("10241", "10241.7z")
 	siblingName := filepath.Join("10241", "sibling.zip")

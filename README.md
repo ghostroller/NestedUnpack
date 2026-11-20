@@ -1,6 +1,6 @@
 # NestedUnpack
 
-NestedUnpack 是一个 Windows 批量解压工具，能识别普通 ZIP 和拼接在 MP4 后面的 ZIP 或 ZIP64。它会递归解开识别出的 ZIP、RAR 和 7z，并把同一组 7z 分卷当作一个包处理。只有一个内层包时会直接展开，有其他文件时会把内层包解压到它旁边的子目录，并保留 EPUB 等原有文件。最终结果写入源文件旁的 `文件名-解压` 文件夹。同名目录会自动加编号。
+NestedUnpack 是一个 Windows 批量解压工具，支持普通 ZIP、RAR、7z、7z 分卷，以及拼接在 MP4 后面的 ZIP 或 ZIP64。它会递归解开识别出的压缩包，并把同一组 7z 分卷当作一个包处理。只有一个内层包时会直接展开，有其他文件时会把内层包解压到它旁边的子目录，并保留 EPUB 等原有文件。最终结果写入源文件旁的 `文件名-解压` 文件夹。同名目录会自动加编号。
 
 ## 使用
 
@@ -22,7 +22,7 @@ NestedUnpack 是一个 Windows 批量解压工具，能识别普通 ZIP 和拼�
 
 ## 构建和注册
 
-构建需要 Go 1.23 或更新版本，以及可从 `PATH` 调用的 LLVM MinGW `clang++`。RAR、7z 分卷及 AES ZIP 的解压使用本机的 7-Zip 命令行程序。
+构建需要 Go 1.25 或更新版本，以及可从 `PATH` 调用的 LLVM MinGW `clang++`。解压由程序内置的 Go 解码器完成，支持 ZipCrypto、WinZip AES 和加密的 RAR、7z。运行机器无需安装 7-Zip。WinZip AES 成员支持 Store、Deflate 和 BZip2。
 
 ```powershell
 .\build.ps1

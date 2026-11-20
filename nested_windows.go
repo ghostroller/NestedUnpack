@@ -87,18 +87,16 @@ func (session *unpackSession) unpackZipLayer(layer nestedEvent, destination stri
 			return fmt.Errorf("不支持的 ZIP 成员 %q", entry.Name)
 		}
 		if entry.Flags&1 != 0 && !isZipCrypto(entry) {
-			return errZipNeeds7Zip
+			if _, err := zipAESParameters(entry); err != nil {
+				return fmt.Errorf("%s · %w", entry.Name, err)
+			}
 		}
 		if entry.CompressedSize64 > math.MaxInt64 || entry.UncompressedSize64 > math.MaxInt64 || entry.UncompressedSize64 > math.MaxUint64-total {
 			return fmt.Errorf("ZIP 成员大小超出支持范围 %q", entry.Name)
 		}
 		total += entry.UncompressedSize64
 	}
-	if total == 0 {
-		session.stage(layer, "解压当前压缩包", -1)
-	} else {
-		progress(0)
-	}
+	session.startArchiveProgress(layer, progress, total)
 	for index, entry := range reader.File {
 		if err := session.ctx.Err(); err != nil {
 			return err
@@ -117,11 +115,7 @@ func (session *unpackSession) unpackZipLayer(layer nestedEvent, destination stri
 		if err != nil {
 			return err
 		}
-		err = session.copyZipLayerMember(layer, output, entry, func(written uint64) {
-			if total != 0 {
-				progress(min(99, int(float64(completed+written)*100/float64(total))))
-			}
-		})
+		err = session.copyZipLayerMember(layer, output, entry, archiveFileProgress(completed, total, progress))
 		closeErr := output.Close()
 		if err != nil || closeErr != nil {
 			return fmt.Errorf("%s · %w", entry.Name, errors.Join(err, closeErr))
@@ -133,15 +127,21 @@ func (session *unpackSession) unpackZipLayer(layer nestedEvent, destination stri
 
 func (session *unpackSession) copyZipLayerMember(layer nestedEvent, output *os.File, entry *zip.File, progress func(uint64)) error {
 	if entry.Flags&1 == 0 {
-		if session.copyBuffer == nil {
-			session.copyBuffer = make([]byte, 4<<20)
-		}
-		return copyMember(output, entry, progress, session.ctx, session.copyBuffer)
+		return copyMember(output, entry, progress, session.ctx, session.archiveCopyBuffer())
 	}
-	return session.tryPasswords(layer, errZipCryptoPassword, false, func(password string) error {
+	wrongPassword := errZipCryptoPassword
+	if entry.Method == zipAESMethod {
+		wrongPassword = errArchivePassword
+	}
+	return session.tryPasswords(layer, wrongPassword, false, func(password string) error {
 		meter := &progressWriter{ctx: session.ctx, file: output, observe: progress}
-		err := copyZipCrypto(entry, meter, password)
-		if !errors.Is(err, errZipCryptoPassword) {
+		var err error
+		if entry.Method == zipAESMethod {
+			err = session.copyZipAES(entry, meter, password)
+		} else {
+			err = copyZipCrypto(entry, meter, password)
+		}
+		if !errors.Is(err, wrongPassword) {
 			return err
 		}
 		if truncateErr := output.Truncate(0); truncateErr != nil {
@@ -154,51 +154,7 @@ func (session *unpackSession) copyZipLayerMember(layer nestedEvent, output *os.F
 	})
 }
 
-var errZipNeeds7Zip = errors.New("ZIP 成员需要 7-Zip 解密")
 var errPasswordSkipped = errors.New("未输入密码")
-
-// A decoder that expects a ZIP at byte zero can use the ZIP section alone.
-// The common ZipCrypto case streams directly from the original file instead.
-func (session *unpackSession) prepareEncryptedZip(layer nestedEvent, work string) (string, error) {
-	file, err := os.Open(layer.Archive)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-	section, err := locateZip(file, info.Size())
-	if errors.Is(err, errNoZip) {
-		// The caller has already opened a ZIP through archive/zip.
-		return layer.Archive, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if section.start == 0 && section.length == info.Size() {
-		return layer.Archive, nil
-	}
-	output, err := os.CreateTemp(work, "encrypted-*.zip")
-	if err != nil {
-		return "", err
-	}
-	session.stage(layer, "准备加密 ZIP", 0)
-	progress := session.progress(layer, "准备加密 ZIP")
-	meter := &progressWriter{ctx: session.ctx, file: output, observe: func(n uint64) {
-		progress(int(float64(n) * 100 / float64(section.length)))
-	}}
-	written, copyErr := io.CopyBuffer(meter, io.NewSectionReader(file, section.start, section.length), make([]byte, 8<<20))
-	closeErr := output.Close()
-	if copyErr != nil || closeErr != nil {
-		return "", errors.Join(copyErr, closeErr)
-	}
-	if written != section.length {
-		return "", io.ErrUnexpectedEOF
-	}
-	return output.Name(), nil
-}
 
 func extractedFiles(directory string) ([]string, error) {
 	var files []string
