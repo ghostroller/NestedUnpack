@@ -5,6 +5,8 @@ use eframe::egui::{
 use egui_extras::{Column, TableBuilder};
 use egui_phosphor::regular as icon;
 
+use crate::i18n::{self, Preference, UiKey, tr};
+
 use super::{
     App, Job, Status, archive_tree,
     dialogs::Settings,
@@ -55,8 +57,8 @@ pub(super) fn show(app: &mut App, ui: &mut Ui, p: Palette) {
     CentralPanel::default()
         .frame(Frame::new().fill(p.canvas).inner_margin(14))
         .show(ui, |ui| {
-            if let Some(notice) = app.notice.as_deref()
-                && notice_banner(ui, p, notice)
+            if let Some(notice) = app.notice.as_ref()
+                && notice_banner(ui, p, &notice.render(i18n::current()))
             {
                 app.notice = None;
             }
@@ -92,21 +94,47 @@ pub(super) fn show(app: &mut App, ui: &mut Ui, p: Palette) {
 fn header(app: &mut App, ui: &mut Ui) {
     style::row(ui, 34.0, Layout::right_to_left(Align::Center), |ui| {
         let (symbol, tooltip, next_theme) = match ui.ctx().theme() {
-            Theme::Dark => (icon::SUN, "切换到浅色主题", Theme::Light),
-            Theme::Light => (icon::MOON, "切换到深色主题", Theme::Dark),
+            Theme::Dark => (icon::SUN, UiKey::LightTheme, Theme::Light),
+            Theme::Light => (icon::MOON, UiKey::DarkTheme, Theme::Dark),
         };
-        if style::icon_button(ui, symbol, tooltip).clicked() {
+        if style::icon_button(ui, symbol, tr(tooltip)).clicked() {
             ui.ctx().set_theme(next_theme);
         }
+        language_menu(app, ui);
         if cfg!(windows) {
-            if ui.add(style::button(icon::GEAR, "右键菜单")).clicked() {
+            if ui
+                .add(style::button(icon::GEAR, tr(UiKey::ContextMenu)))
+                .clicked()
+            {
                 app.settings = Some(Settings::menu());
             }
-        } else if ui.add(style::button(icon::FILE, "第三方许可")).clicked() {
+        } else if ui
+            .add(style::button(icon::FILE, tr(UiKey::Licenses)))
+            .clicked()
+        {
             app.settings = Some(Settings::Licenses);
         }
-        if ui.add(style::button(icon::KEY, "密码簿")).clicked() {
+        if ui
+            .add(style::button(icon::KEY, tr(UiKey::PasswordBook)))
+            .clicked()
+        {
             app.settings = Some(Settings::book());
+        }
+    });
+}
+
+fn language_menu(app: &mut App, ui: &mut Ui) {
+    let response = style::icon_button(ui, icon::GLOBE_SIMPLE, tr(UiKey::Language));
+    let current = i18n::preference();
+    egui::Popup::menu(&response).show(|ui| {
+        for (choice, label) in [
+            (Preference::System, UiKey::FollowSystem),
+            (Preference::ZhCn, UiKey::SimplifiedChinese),
+            (Preference::En, UiKey::English),
+        ] {
+            if ui.selectable_label(current == choice, tr(label)).clicked() && current != choice {
+                app.set_language(choice);
+            }
         }
     });
 }
@@ -115,25 +143,28 @@ fn footer(app: &App, ui: &mut Ui, p: Palette) {
     ui.horizontal(|ui| {
         let summary = if app.worker.is_some() {
             if app.waiting.is_empty() {
-                "正在处理当前批次".to_owned()
+                tr(UiKey::CurrentBatch).to_owned()
             } else {
-                format!("另有 {} 个文件等待解压", app.waiting.len())
+                i18n::waiting_files(app.waiting.len())
             }
         } else if let Some(summary) = &app.completed {
-            format!(
-                "{} · 共 {} 个文件 · 成功 {} · 跳过 {} · 失败 {}",
-                if summary.canceled {
-                    "已停止"
-                } else {
-                    "处理完毕"
-                },
-                summary.total,
-                summary.success,
-                summary.skipped,
-                summary.failed
+            let status = tr(if summary.canceled {
+                UiKey::BatchStopped
+            } else {
+                UiKey::BatchCompleted
+            });
+            i18n::format(
+                UiKey::BatchSummary,
+                &[
+                    &status,
+                    &i18n::file_count(summary.total),
+                    &summary.success,
+                    &summary.skipped,
+                    &summary.failed,
+                ],
             )
         } else {
-            format!("共 {} 个文件", app.jobs.len())
+            i18n::format(UiKey::TotalFiles, &[&i18n::file_count(app.jobs.len())])
         };
         ui.label(RichText::new(summary).size(12.0).color(p.muted));
     });
@@ -157,7 +188,7 @@ fn notice_banner(ui: &mut Ui, p: Palette, notice: &str) -> bool {
                         TextWrapMode::Wrap,
                     );
                 });
-                style::icon_button(ui, icon::X, "关闭提示").clicked()
+                style::icon_button(ui, icon::X, tr(UiKey::DismissNotice)).clicked()
             })
         })
         .inner
@@ -179,21 +210,19 @@ fn empty_area(app: &mut App, ui: &mut Ui, p: Palette, dropping: bool) {
             style::glyph_tile(ui, icon::UPLOAD_SIMPLE, p, 64.0);
             ui.add_space(8.0);
             ui.label(
-                RichText::new(if dropping {
-                    "松开鼠标开始解压"
+                RichText::new(tr(if dropping {
+                    UiKey::ReleaseToExtract
                 } else {
-                    "拖入压缩包开始解压"
-                })
+                    UiKey::DropToExtract
+                }))
                 .size(26.0)
                 .strong()
                 .color(p.text),
             );
-            ui.label(
-                RichText::new("支持 ZIP、RAR、7z、7z 分卷和带 ZIP 的 MP4 文件").color(p.muted),
-            );
+            ui.label(RichText::new(tr(UiKey::SupportedFormats)).color(p.muted));
             ui.add_space(8.0);
             if ui
-                .add(style::primary(icon::FOLDER_OPEN, "选择文件", p))
+                .add(style::primary(icon::FOLDER_OPEN, tr(UiKey::ChooseFiles), p))
                 .clicked()
             {
                 app.pick_requested = true;
@@ -204,8 +233,12 @@ fn empty_area(app: &mut App, ui: &mut Ui, p: Palette, dropping: bool) {
 
 fn queue_toolbar(app: &mut App, ui: &mut Ui, p: Palette, job_count: usize) {
     style::row(ui, 38.0, Layout::left_to_right(Align::Center), |ui| {
-        ui.label(RichText::new("解压队列").size(22.0).strong());
-        ui.label(RichText::new(format!("{job_count} 个文件")).color(p.muted));
+        ui.label(
+            RichText::new(tr(UiKey::ExtractionQueue))
+                .size(22.0)
+                .strong(),
+        );
+        ui.label(RichText::new(i18n::file_count(job_count)).color(p.muted));
         style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
             task_actions(app, ui, p);
         });
@@ -217,7 +250,7 @@ fn task_actions(app: &mut App, ui: &mut Ui, p: Palette) {
     if ui
         .add_enabled(
             !app.closing && !app.stopping(),
-            style::primary(icon::PLUS, "添加文件", p),
+            style::primary(icon::PLUS, tr(UiKey::AddFiles), p),
         )
         .clicked()
     {
@@ -225,11 +258,11 @@ fn task_actions(app: &mut App, ui: &mut Ui, p: Palette) {
     }
     if app.worker.is_some() {
         let stopping = app.stopping();
-        let label = if stopping {
-            "正在停止"
+        let label = tr(if stopping {
+            UiKey::Stopping
         } else {
-            "停止解压"
-        };
+            UiKey::StopExtraction
+        });
         if ui
             .add_enabled(!stopping, style::button(icon::STOP_CIRCLE, label))
             .clicked()
@@ -271,27 +304,26 @@ fn single_file_view(app: &mut App, ui: &mut Ui, p: Palette) {
 
 fn progress_description(app: &App, job: Option<&Job>) -> String {
     if app.stopping() {
-        "正在停止并清理暂存文件".into()
+        tr(UiKey::CleaningUp).into()
     } else if let Some(job) = job {
-        let stage = if job.stage.is_empty() {
-            "正在识别压缩包"
-        } else {
-            &job.stage
-        };
+        let stage = job.stage.map_or_else(|| tr(UiKey::IdentifyingArchive), tr);
         job.active_layer
             .and_then(|id| job.layers.get(&id))
             .map_or_else(
                 || stage.to_owned(),
-                |layer| format!("第 {} 层 · {} · {}", layer.depth, layer.name, stage),
+                |layer| i18n::format(UiKey::LayerProgress, &[&layer.depth, &layer.name, &stage]),
             )
     } else {
-        "等待处理文件".into()
+        tr(UiKey::WaitingForFiles).into()
     }
 }
 
 fn active_progress(app: &App, ui: &mut Ui, p: Palette) {
     let job = app.current.and_then(|index| app.jobs.get(index));
-    let title = job.map_or_else(|| "正在准备文件".into(), |job| short_path(&job.path));
+    let title = job.map_or_else(
+        || tr(UiKey::PreparingFiles).into(),
+        |job| short_path(&job.path),
+    );
     let description = progress_description(app, job);
     let percent = job.and_then(|job| job.percent).filter(|_| !app.stopping());
     p.card(10).show(ui, |ui| {
@@ -383,21 +415,23 @@ fn work_area(app: &mut App, ui: &mut Ui, p: Palette) {
 }
 
 fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize> {
+    use crate::i18n::{UiKey, tr};
+
     let mut selected = None;
     let rows = app.jobs.len() + app.waiting.len();
     let row_height = 46.0;
-    let card = p.card(3);
+    let card = p.card(6);
     let height = (height - card.total_margin().sum().y).max(0.0);
     card.show(ui, |ui| {
         let header_height = 35.0;
         let table_height = (height - header_height - ui.spacing().item_spacing.y).max(0.0);
         ui.set_min_size(vec2(ui.available_width(), height));
-        // Table stripes and selections extend into the spacing around cells.
+        // Keep partially visible rows within the card padding.
         ui.shrink_clip_rect(ui.max_rect());
         TableBuilder::new(ui)
             .id_salt("queue-table")
             .cell_layout(Layout::left_to_right(Align::Center))
-            .striped(true)
+            .striped(false)
             .sense(Sense::click())
             .min_scrolled_height(0.0)
             .max_scroll_height(table_height)
@@ -405,7 +439,7 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
             .column(Column::exact(100.0).clip(true))
             .column(Column::exact(62.0).clip(true))
             .header(header_height, |mut header| {
-                for label in ["文件", "状态", "进度"] {
+                for label in [UiKey::File, UiKey::Status, UiKey::Progress].map(tr) {
                     header.col(|ui| {
                         ui.add_space(9.0);
                         ui.label(RichText::new(label).color(p.muted).size(12.0).strong());
@@ -413,22 +447,7 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
                 }
             })
             .body(|mut body| {
-                let cell_width = body.widths().iter().sum::<f32>();
-                let columns = body.widths().len() as f32;
-                let body_ui = body.ui_mut();
-                let spacing = body_ui.spacing().item_spacing;
-                let origin = body_ui.available_rect_before_wrap().min - spacing * 0.5;
-                let stride = row_height + spacing.y;
-                let bounds = egui::Rect::from_min_size(
-                    origin,
-                    vec2(cell_width + spacing.x * columns, stride * rows as f32),
-                );
-                // Use the table geometry so a button inside a cell doesn't cancel row hover.
-                let hovered_row = body_ui
-                    .ctx()
-                    .pointer_hover_pos()
-                    .filter(|_| body_ui.rect_contains_pointer(bounds))
-                    .map(|pos| ((pos.y - origin.y) / stride) as usize);
+                let painter = body.ui_mut().painter().clone();
                 body.rows(row_height, rows, |mut row| {
                     let index = row.index();
                     let job = app.jobs.get(index);
@@ -439,9 +458,12 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
                     let status = job.map_or(Status::Pending, |job| job.status);
                     let is_selected = app.selected == Some(index);
                     let mut file_clicked = false;
-                    row.set_selected(is_selected);
-                    row.set_hovered(hovered_row == Some(index));
+                    // Reserve a paint slot before the cells so the entire row gets one fill.
+                    let background = painter.add(egui::Shape::Noop);
+                    row.set_hovered(false);
+                    let mut row_rect = egui::Rect::NOTHING;
                     row.col(|ui| {
+                        row_rect = ui.max_rect();
                         ui.add_space(8.0);
                         file_clicked = ui
                             .add_enabled(
@@ -450,7 +472,11 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
                                     icon::FILE_ZIP,
                                     18.0,
                                     Some(p.accent),
-                                    RichText::new(short_path(path)),
+                                    RichText::new(short_path(path)).color(if is_selected {
+                                        p.accent
+                                    } else {
+                                        p.text
+                                    }),
                                     move |button| {
                                         button.selected(is_selected).frame(false).truncate()
                                     },
@@ -472,6 +498,7 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
                         );
                     });
                     row.col(|ui| {
+                        row_rect = row_rect.union(ui.max_rect());
                         ui.add_space(9.0);
                         let progress = match status {
                             Status::Success => Some(100),
@@ -487,13 +514,100 @@ fn queue_table(app: &App, ui: &mut Ui, p: Palette, height: f32) -> Option<usize>
                             .size(12.0),
                         );
                     });
-                    if job.is_some() && (file_clicked || row.response().clicked()) {
+                    let response = row.response();
+                    let hovered = painter.ctx().rect_contains_pointer(
+                        painter.layer_id(),
+                        row_rect.intersect(painter.clip_rect()),
+                    );
+                    let fill = if is_selected {
+                        Some(p.accent_soft)
+                    } else if hovered {
+                        Some(p.softened.lerp_to_gamma(p.accent_soft, 0.60))
+                    } else if index.is_multiple_of(2) {
+                        Some(p.softened)
+                    } else {
+                        None
+                    };
+                    if let Some(fill) = fill {
+                        painter.set(
+                            background,
+                            egui::Shape::rect_filled(row_rect.shrink2(vec2(0.0, 1.5)), 7, fill),
+                        );
+                    }
+                    if job.is_some() && (file_clicked || response.clicked()) {
                         selected = Some(index);
                     }
                 });
             });
     });
     selected
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use egui::{Context, CornerRadius, Event, RawInput, Rect, Shape, pos2};
+
+    #[test]
+    fn rounded_row_backgrounds_follow_hover_across_cells() {
+        let mut app = App::default();
+        app.jobs.push(Job::new("first.zip".into()));
+        app.jobs.push(Job::new("second.zip".into()));
+        app.selected = Some(0);
+        let ctx = Context::default();
+        style::configure(&ctx);
+        let palette = Palette::current(&ctx);
+
+        let draw = |events| {
+            let mut output = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(480.0, 250.0))),
+                    events,
+                    ..RawInput::default()
+                },
+                |ui| {
+                    let height = ui.available_height();
+                    queue_table(&app, ui, palette, height);
+                },
+            );
+            output.textures_delta.clear();
+            output.shapes
+        };
+        let fill_bounds = |shapes: &[egui::epaint::ClippedShape], color| {
+            shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    Shape::Rect(shape) if shape.fill == color => {
+                        assert_eq!(shape.corner_radius, CornerRadius::same(7));
+                        assert!(clipped.clip_rect.contains_rect(shape.rect));
+                        Some(shape.rect)
+                    }
+                    _ => None,
+                })
+                .expect("one rounded row background")
+        };
+        draw(Vec::new());
+        let shapes = draw(Vec::new());
+        let selected = fill_bounds(&shapes, palette.accent_soft);
+        let file_center = shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if text.galley.text() == "second.zip" => {
+                    Some(text.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+            .expect("second row filename");
+        let hover_color = palette.softened.lerp_to_gamma(palette.accent_soft, 0.60);
+        let over_file = draw(vec![Event::PointerMoved(file_center)]);
+        let hovered = fill_bounds(&over_file, hover_color);
+        assert_eq!(hovered.x_range(), selected.x_range());
+        assert!(hovered.contains(file_center));
+
+        let end_of_row = pos2(hovered.right() - 5.0, file_center.y);
+        let over_blank_cell = draw(vec![Event::PointerMoved(end_of_row)]);
+        assert_eq!(fill_bounds(&over_blank_cell, hover_color), hovered);
+    }
 }
 
 fn details_panel(
@@ -531,15 +645,19 @@ fn details_panel(
             && let Some(path) = &result.output
         {
             ui.label(
-                RichText::new(format!(
-                    "{} 个文件 · {} 个压缩包 · 最深 {} 层",
-                    result.files, result.archives, result.depth
+                RichText::new(i18n::archive_summary(
+                    result.files,
+                    result.archives,
+                    result.depth,
                 ))
                 .size(12.0)
                 .color(p.muted),
             );
             if ui
-                .add(style::button(icon::FOLDER_OPEN, "打开解压目录"))
+                .add(style::button(
+                    icon::FOLDER_OPEN,
+                    tr(UiKey::OpenOutputFolder),
+                ))
                 .on_hover_text(path.display().to_string())
                 .clicked()
             {
@@ -555,24 +673,29 @@ fn details_panel(
             .max_height(ui.available_height().max(0.0))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if let Some(result) = &job.result
-                    && !result.detail.is_empty()
+                if let Some(detail) = job
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.detail.as_ref())
                 {
                     let failed = job.status == Status::Failed;
                     let color = if failed { p.danger } else { p.muted };
                     ui.add(
-                        Label::new(RichText::new(&result.detail).color(color)).selectable(failed),
+                        Label::new(RichText::new(detail.render(i18n::current())).color(color))
+                            .selectable(failed),
                     );
                 }
                 if let Some(roots) = job.children.get(&None) {
                     archive_tree::show(ui, p, job, roots);
                 } else {
                     ui.label(
-                        RichText::new(if matches!(job.status, Status::Pending | Status::Running) {
-                            "等待识别压缩包"
-                        } else {
-                            "无压缩包结构"
-                        })
+                        RichText::new(tr(
+                            if matches!(job.status, Status::Pending | Status::Running) {
+                                UiKey::AwaitingArchive
+                            } else {
+                                UiKey::NoArchiveContents
+                            },
+                        ))
                         .color(p.muted),
                     );
                 }
@@ -627,7 +750,10 @@ fn single_status(app: &App, job: &Job, ui: &mut Ui, p: Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{JobResult, Layer};
+    use crate::{
+        i18n::EngineKey,
+        session::{JobResult, Layer},
+    };
     use egui::{
         Context, Event, Modifiers, MouseWheelUnit, RawInput, Rect, Shape, TouchPhase, pos2,
     };
@@ -639,7 +765,7 @@ mod tests {
         job.result = Some(JobResult {
             status: Status::Success,
             output: Some("demo".into()),
-            detail: String::new(),
+            detail: None,
             files: 30,
             archives: 31,
             depth: 2,
@@ -649,7 +775,7 @@ mod tests {
                 id,
                 parent: (id > 0).then_some(0),
                 name: format!("part-{id:02}.zip"),
-                format: "ZIP",
+                format: EngineKey::FormatZip,
                 status: Status::Success,
                 volumes: Vec::new(),
                 files: None,
@@ -690,11 +816,12 @@ mod tests {
                 })
                 .unwrap_or_else(|| panic!("missing label {label:?}"))
         };
+        let summary = i18n::archive_summary(30, 31, 2);
         let pinned = [
             "demo.zip",
-            "成功",
-            "30 个文件 · 31 个压缩包 · 最深 2 层",
-            "打开解压目录",
+            status_style(Palette::current(&ctx), Status::Success).1,
+            &summary,
+            tr(UiKey::OpenOutputFolder),
         ];
         let row = "part-04.zip · ZIP";
         draw(Vec::new());

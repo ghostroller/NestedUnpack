@@ -19,6 +19,7 @@ use std::{
 use eframe::egui::{self, Context, Ui};
 
 use crate::{
+    i18n::{self, AppKey, Message, Preference, Text, tr},
     platform,
     session::{
         self, BatchSummary, Event, JobResult, Layer, Observer, PasswordReply, PasswordRequest,
@@ -47,6 +48,7 @@ pub(crate) fn run(paths: Vec<PathBuf>) -> eframe::Result<()> {
             style::configure(&creation.egui_ctx);
             let mut app = App::default();
             app.enqueue(paths, &creation.egui_ctx);
+            app.refresh_menu_language();
             Ok(Box::new(app))
         }),
     )
@@ -64,7 +66,7 @@ struct App {
     completed: Option<BatchSummary>,
     password: Option<PasswordPrompt>,
     settings: Option<Settings>,
-    notice: Option<String>,
+    notice: Option<Message>,
     closing: bool,
     pick_requested: bool,
 }
@@ -72,7 +74,7 @@ struct App {
 struct Job {
     path: PathBuf,
     status: Status,
-    stage: String,
+    stage: Option<Text>,
     percent: Option<u8>,
     active_layer: Option<usize>,
     layers: BTreeMap<usize, Layer>,
@@ -86,7 +88,7 @@ impl Job {
         Self {
             path,
             status: Status::Pending,
-            stage: String::new(),
+            stage: None,
             percent: None,
             active_layer: None,
             layers: BTreeMap::new(),
@@ -217,7 +219,9 @@ impl App {
                 self.follow = true;
                 self.completed = None;
             }
-            Err(error) => self.notice = Some(format!("无法启动解压任务。{error}")),
+            Err(error) => {
+                self.notice = Some(Message::from(AppKey::WorkerStartFailed).arg(error.to_string()));
+            }
         }
     }
 
@@ -254,11 +258,11 @@ impl App {
                     for job in &mut self.jobs[offset..] {
                         if matches!(job.status, Status::Pending | Status::Running) {
                             job.status = Status::Failed;
-                            job.stage = "解压任务意外结束".into();
+                            job.stage = Some(AppKey::WorkerEnded.into());
                         }
                     }
                     self.finish_waiting();
-                    self.notice = Some("解压任务意外结束。".into());
+                    self.notice = Some(AppKey::WorkerEnded.into());
                     self.start_next(ctx);
                     return;
                 }
@@ -293,7 +297,7 @@ impl App {
                 percent,
             } => {
                 if let Some(job) = self.jobs.get_mut(offset + index) {
-                    job.stage = description;
+                    job.stage = Some(description.into());
                     job.percent = percent;
                     job.active_layer = layer;
                 }
@@ -361,12 +365,35 @@ impl App {
         }
     }
 
+    fn set_language(&mut self, preference: Preference) {
+        if preference == i18n::preference() {
+            return;
+        }
+        if let Err(error) = i18n::set_preference(preference) {
+            self.notice =
+                Some(Message::from(AppKey::SaveLanguageFailed).arg(Message::from_error(error)));
+        } else {
+            self.refresh_menu_language();
+        }
+    }
+
+    fn refresh_menu_language(&mut self) {
+        if let Err(error) = platform::refresh_menu_language() {
+            self.notice = Some(
+                Message::from(AppKey::UpdateMenuLanguageFailed).arg(Message::from_error(error)),
+            );
+        }
+    }
+
     fn pick(&mut self, frame: &eframe::Frame, ctx: &Context) {
         if let Some(paths) = rfd::FileDialog::new()
             .set_parent(frame)
-            .set_title("选择要解压的文件")
-            .add_filter("压缩包和视频", &["zip", "zipx", "rar", "7z", "001", "mp4"])
-            .add_filter("所有文件", &["*"])
+            .set_title(tr(AppKey::ChooseArchives))
+            .add_filter(
+                tr(AppKey::ArchivesAndVideos),
+                &["zip", "zipx", "rar", "7z", "001", "mp4"],
+            )
+            .add_filter(tr(AppKey::AllFiles), &["*"])
             .pick_files()
         {
             self.enqueue(paths, ctx);
@@ -375,7 +402,8 @@ impl App {
 
     fn open_output(&mut self, path: &Path) {
         if let Err(error) = platform::open_directory(path) {
-            self.notice = Some(format!("无法打开解压目录。{error}"));
+            self.notice =
+                Some(Message::from(AppKey::OpenOutputFailed).arg(Message::from_error(error)));
         }
     }
 }

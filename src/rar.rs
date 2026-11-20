@@ -10,6 +10,7 @@ use unrar_sys as rar;
 use zeroize::Zeroizing;
 
 use crate::archive::{Control, ExtractError, safe_path};
+use crate::i18n::{EngineKey, Message};
 
 #[cfg(test)]
 mod tests;
@@ -161,7 +162,7 @@ fn pass(
     let raw = unsafe { rar::RAROpenArchiveEx((&raw mut opening).cast()) };
     let handle = NonNull::new(raw.cast_mut()).map(Handle);
     status(opening.result as i32, &mut state.borrow_mut(), false)?;
-    let handle = handle.ok_or_else(|| invalid("无法打开 RAR 压缩包"))?;
+    let handle = handle.ok_or_else(|| invalid(EngineKey::OpenRar))?;
     let headers_encrypted = opening.flags & rar::ROADF_ENCHEADERS != 0;
     let mut total = 0_u64;
     let mut name = vec![0; 32_768];
@@ -181,7 +182,7 @@ fn pass(
         let directory = header.flags & rar::RHDF_DIRECTORY != 0;
         let encrypted = header.flags & rar::RHDF_ENCRYPTED != 0;
         if header.flags & rar::RHDF_SPLITBEFORE != 0 {
-            return Err(invalid("请从 RAR 的第一个分卷开始解压"));
+            return Err(invalid(EngineKey::StartFirstRarVolume));
         }
         let entry_name = decoded_name(&name)?;
         let attributes = header.attributes;
@@ -190,12 +191,18 @@ fn pass(
             || (header.host_os == 3 && !matches!(unix_type, 0 | 0x4000 | 0x8000))
             || (header.host_os == 2 && attributes & 0x400 != 0)
         {
-            return Err(invalid(format!("不支持 RAR 链接或特殊文件 {entry_name:?}")));
+            return Err(invalid(
+                Message::from(EngineKey::UnsupportedRarEntry).arg(format!("{entry_name:?}")),
+            ));
         }
         let target = safe_path(destination, &entry_name)?;
         let size = (u64::from(header.size_high) << 32) | u64::from(header.size);
         let operation = if extract && !directory {
-            fs::create_dir_all(target.parent().ok_or_else(|| invalid("RAR 路径无效"))?)?;
+            fs::create_dir_all(
+                target
+                    .parent()
+                    .ok_or_else(|| invalid(EngineKey::InvalidRarPath))?,
+            )?;
             let mut state = state.borrow_mut();
             state.file = Some(File::create_new(&target)?);
             state.remaining = size;
@@ -214,12 +221,14 @@ fn pass(
         state.file = None;
         status(result, &mut state, encrypted || headers_encrypted)?;
         if operation == rar::RAR_TEST && state.remaining != 0 {
-            return Err(invalid(format!("RAR 文件长度不符 {entry_name:?}")));
+            return Err(invalid(
+                Message::from(EngineKey::RarFileSizeMismatch).arg(format!("{entry_name:?}")),
+            ));
         }
         if !directory {
             total = total
                 .checked_add(size)
-                .ok_or_else(|| invalid("RAR 文件总长度超出范围"))?;
+                .ok_or_else(|| invalid(EngineKey::RarContentTooLarge))?;
         }
     }
 }
@@ -232,7 +241,9 @@ fn status(result: i32, state: &mut State<'_>, encrypted: bool) -> Result<(), Ext
         rar::ERAR_SUCCESS => Ok(()),
         rar::ERAR_MISSING_PASSWORD | rar::ERAR_BAD_PASSWORD => Err(ExtractError::Password),
         rar::ERAR_BAD_DATA if encrypted => Err(ExtractError::Password),
-        _ => Err(invalid(format!("UnRAR 错误 {result}"))),
+        _ => Err(invalid(
+            Message::from(EngineKey::UnrarError).arg(result.to_string()),
+        )),
     }
 }
 
@@ -249,7 +260,7 @@ extern "system" fn callback(message: u32, context: isize, arg: isize, value: isi
             -1
         }
         Err(_) => {
-            state.error = Some(invalid("RAR 解压回调异常"));
+            state.error = Some(invalid(EngineKey::RarCallbackError));
             -1
         }
     }
@@ -268,7 +279,7 @@ impl State<'_> {
                     self.remaining = self
                         .remaining
                         .checked_sub(value as u64)
-                        .ok_or_else(|| invalid("RAR 文件展开长度超出声明值"))?;
+                        .ok_or_else(|| invalid(EngineKey::RarExceedsDeclaredSize))?;
                     // UnRAR owns this data for the duration of the callback.
                     let data =
                         unsafe { std::slice::from_raw_parts(arg as *const u8, value as usize) };
@@ -289,7 +300,7 @@ impl State<'_> {
                 Ok(1)
             }
             rar::UCM_CHANGEVOLUME | rar::UCM_CHANGEVOLUMEW if value == 0 => {
-                Err(invalid("缺少 RAR 分卷"))
+                Err(invalid(EngineKey::MissingRarVolume))
             }
             rar::UCM_CHANGEVOLUME | rar::UCM_CHANGEVOLUMEW => Ok(1),
             // Returning zero retains UnRAR's default dictionary memory limit.
@@ -304,7 +315,7 @@ fn copy_password<T: Copy + Default + PartialEq>(
     password: &[T],
 ) -> Result<(), ExtractError> {
     if capacity <= 0 || password.len() >= capacity as usize || password.contains(&T::default()) {
-        return Err(invalid("RAR 密码超出允许长度或包含空字符"));
+        return Err(invalid(EngineKey::InvalidRarPassword));
     }
     let target = target as *mut T;
     // The native caller provides capacity elements of the matching type.
@@ -325,10 +336,10 @@ fn wide_path(path: &Path) -> Result<Vec<rar::WCHAR>, ExtractError> {
     #[cfg(not(windows))]
     let units = wide(
         path.to_str()
-            .ok_or_else(|| invalid("RAR 路径不是有效的 Unicode"))?,
+            .ok_or_else(|| invalid(EngineKey::NonUnicodeRarPath))?,
     );
     if units.contains(&0) {
-        return Err(invalid("RAR 路径包含空字符"));
+        return Err(invalid(EngineKey::NulRarPath));
     }
     Ok(units.into_iter().chain([0]).collect())
 }
@@ -350,7 +361,7 @@ fn decoded_name(units: &[rar::WCHAR]) -> Result<String, ExtractError> {
         .iter()
         .position(|unit| *unit == 0)
         .filter(|end| *end > 0 && *end < units.len() - 1)
-        .ok_or_else(|| invalid("RAR 文件名为空或超出长度限制"))?;
+        .ok_or_else(|| invalid(EngineKey::InvalidRarFilenameLength))?;
     #[cfg(windows)]
     let decoded = String::from_utf16(&units[..end]).ok();
     #[cfg(not(windows))]
@@ -358,9 +369,9 @@ fn decoded_name(units: &[rar::WCHAR]) -> Result<String, ExtractError> {
         .iter()
         .map(|unit| char::from_u32(*unit as u32))
         .collect::<Option<String>>();
-    decoded.ok_or_else(|| invalid("RAR 文件名不是有效的 Unicode"))
+    decoded.ok_or_else(|| invalid(EngineKey::NonUnicodeRarFilename))
 }
 
-fn invalid(message: impl Into<String>) -> ExtractError {
+fn invalid(message: impl Into<Message>) -> ExtractError {
     ExtractError::Invalid(message.into())
 }

@@ -7,6 +7,8 @@ use zip::read::ZipReadOptions;
 use zip::result::ZipError;
 use zip::{System, ZipArchive};
 
+use crate::i18n::{EngineKey, Message};
+
 use super::input::ZipView;
 use super::{
     COPY_BUFFER, Control, CopyError, ExtractError, RAR4, RAR5, check_cancel, copy_member,
@@ -165,10 +167,10 @@ pub(super) fn extract(
 ) -> Result<(), ExtractError> {
     check_cancel(control)?;
     let (file, length) = open_file(source)?;
-    let mut archive =
-        open_archive(file, length)?.ok_or_else(|| ExtractError::Invalid("未识别到 ZIP".into()))?;
+    let mut archive = open_archive(file, length)?
+        .ok_or_else(|| ExtractError::Invalid(EngineKey::NotZip.into()))?;
     if archive.has_duplicate_names() {
-        return Err(ExtractError::Invalid("ZIP 目录含重复的成员名称".into()));
+        return Err(ExtractError::Invalid(EngineKey::DuplicateZipEntries.into()));
     }
 
     let mut entries = Vec::with_capacity(archive.len());
@@ -189,13 +191,15 @@ pub(super) fn extract(
         let reparse_point =
             entry.system() != System::Unix && entry.external_attributes() & 0x400 != 0;
         if entry.is_symlink() || reparse_point || !matches!(mode, 0 | 0o040000 | 0o100000) {
-            return Err(ExtractError::Invalid(format!("不支持的 ZIP 成员 {name:?}")));
+            return Err(ExtractError::Invalid(
+                Message::from(EngineKey::UnsupportedZipEntry).arg(format!("{name:?}")),
+            ));
         }
         let path = safe_path(destination, &name)?;
         let size = entry.size();
         total = total
             .checked_add(size)
-            .ok_or_else(|| ExtractError::Invalid("ZIP 成员总大小超出支持范围".into()))?;
+            .ok_or_else(|| ExtractError::Invalid(EngineKey::ZipContentTooLarge.into()))?;
         entries.push(Entry {
             index,
             name: name.into_owned(),
@@ -268,18 +272,20 @@ fn extract_member(
         match result {
             Err(ExtractError::Password) => request_password(control, &mut password)?,
             Err(ExtractError::Io(error)) => {
-                return Err(
-                    io::Error::new(error.kind(), format!("{} · {error}", entry.name)).into(),
-                );
+                let kind = error.kind();
+                return Err(Message::from(EngineKey::ArchiveEntryError)
+                    .arg(entry.name.as_str())
+                    .arg(Message::from_error(error))
+                    .io(kind)
+                    .into());
             }
             Err(error) => return Err(error),
             Ok(()) => {
                 if validate_rar && !has_rar_signature(&entry.path)? {
                     fs::remove_file(&entry.path)?;
-                    return Err(ExtractError::Invalid(format!(
-                        "{} · 成员没有 RAR 文件头",
-                        entry.name
-                    )));
+                    return Err(ExtractError::Invalid(
+                        Message::from(EngineKey::NoRarSignature).arg(entry.name.as_str()),
+                    ));
                 }
                 if !password.is_empty() {
                     control.accepted(&password);
@@ -304,6 +310,6 @@ fn zip_error(error: ZipError) -> ExtractError {
             ExtractError::Password
         }
         ZipError::Io(error) => error.into(),
-        error => ExtractError::Invalid(error.to_string()),
+        error => ExtractError::Invalid(Message::raw(error.to_string())),
     }
 }

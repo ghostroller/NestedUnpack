@@ -11,7 +11,10 @@ use eframe::egui::{
 };
 use egui_phosphor::regular as icon;
 
-use crate::session::Status;
+use crate::{
+    i18n::{AppKey, format as localize, tr},
+    session::Status,
+};
 
 const ICON_FONT: &str = "phosphor";
 
@@ -34,12 +37,12 @@ pub(super) struct Palette {
 
 pub(super) fn status_style(p: Palette, status: Status) -> (&'static str, &'static str, Color32) {
     match status {
-        Status::Pending => (icon::CLOCK, "等待", p.muted),
-        Status::Running => (icon::SPINNER, "解压中", p.accent),
-        Status::Success => (icon::CHECK_CIRCLE, "成功", p.positive),
-        Status::Skipped => (icon::SKIP_FORWARD, "已跳过", p.warning),
-        Status::Failed => (icon::WARNING_CIRCLE, "失败", p.danger),
-        Status::Canceled => (icon::STOP_CIRCLE, "已停止", p.muted),
+        Status::Pending => (icon::CLOCK, tr(AppKey::Pending), p.muted),
+        Status::Running => (icon::SPINNER, tr(AppKey::Running), p.accent),
+        Status::Success => (icon::CHECK_CIRCLE, tr(AppKey::Success), p.positive),
+        Status::Skipped => (icon::SKIP_FORWARD, tr(AppKey::Skipped), p.warning),
+        Status::Failed => (icon::WARNING_CIRCLE, tr(AppKey::Failed), p.danger),
+        Status::Canceled => (icon::STOP_CIRCLE, tr(AppKey::Canceled), p.muted),
     }
 }
 
@@ -412,11 +415,15 @@ pub(super) fn tree_row(
                 .add(egui::Shape::line(points.to_vec(), Stroke::new(1.35, color)));
         }
         response.widget_info(|| {
-            let action = if state.is_open() { "收起" } else { "展开" };
+            let action = if state.is_open() {
+                AppKey::Collapse
+            } else {
+                AppKey::Expand
+            };
             WidgetInfo::labeled(
                 WidgetType::CollapsingHeader,
                 ui.is_enabled(),
-                format!("{action} {}", content.text.text()),
+                localize(action, &[&content.text.text()]),
             )
         });
     } else {

@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
+use crate::i18n::{EngineKey, Message};
+
 use super::open_file;
 
 // Restrict ZIP's seekable view to the appended archive. The optional mask marks
@@ -88,7 +90,7 @@ impl JoinedVolumes {
             let (file, length) = open_file(path)?;
             let start = size;
             size = size.checked_add(length).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "7z 分卷总大小超出支持范围")
+                Message::from(EngineKey::SplitArchiveTooLarge).io(io::ErrorKind::InvalidData)
             })?;
             parts.push(Part {
                 file,
@@ -120,10 +122,9 @@ impl Read for JoinedVolumes {
         let capacity = (part.end - self.position).min(output.len() as u64) as usize;
         let read = part.file.read(&mut output[..capacity])?;
         if read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "7z 分卷被截断",
-            ));
+            return Err(
+                Message::from(EngineKey::TruncatedSplitArchive).io(io::ErrorKind::UnexpectedEof)
+            );
         }
         part.position += read as u64;
         self.position += read as u64;
@@ -147,5 +148,5 @@ fn seek_position(from: SeekFrom, position: u64, size: u64) -> io::Result<u64> {
 }
 
 fn invalid_seek() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, "无效的压缩包寻址位置")
+    Message::from(EngineKey::InvalidArchiveSeek).io(io::ErrorKind::InvalidInput)
 }

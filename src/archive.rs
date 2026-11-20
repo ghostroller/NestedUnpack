@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
+use crate::i18n::{EngineKey, Message, tr};
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Kind {
     Zip,
@@ -21,7 +23,7 @@ pub(crate) enum Kind {
 #[derive(Debug)]
 pub(crate) enum ExtractError {
     Io(io::Error),
-    Invalid(String),
+    Invalid(Message),
     Password,
     Skipped,
     Canceled,
@@ -31,10 +33,22 @@ impl fmt::Display for ExtractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => error.fmt(f),
-            Self::Invalid(message) => f.write_str(message),
-            Self::Password => f.write_str("压缩包需要正确的密码，或加密数据已损坏"),
-            Self::Skipped => f.write_str("未输入密码"),
-            Self::Canceled => f.write_str("已取消解压"),
+            Self::Invalid(message) => message.fmt(f),
+            Self::Password => f.write_str(tr(EngineKey::PasswordOrCorrupt)),
+            Self::Skipped => f.write_str(tr(EngineKey::NoPassword)),
+            Self::Canceled => f.write_str(tr(EngineKey::ExtractionCanceled)),
+        }
+    }
+}
+
+impl ExtractError {
+    pub(crate) fn into_message(self) -> Message {
+        match self {
+            Self::Io(error) => Message::from_error(error),
+            Self::Invalid(message) => message,
+            Self::Password => EngineKey::PasswordOrCorrupt.into(),
+            Self::Skipped => EngineKey::NoPassword.into(),
+            Self::Canceled => EngineKey::ExtractionCanceled.into(),
         }
     }
 }
@@ -96,7 +110,7 @@ pub(crate) fn extract(
 ) -> Result<(), ExtractError> {
     let source = parts
         .first()
-        .ok_or_else(|| ExtractError::Invalid("缺少压缩包路径".into()))?;
+        .ok_or_else(|| ExtractError::Invalid(EngineKey::MissingArchivePath.into()))?;
     check_cancel(control)?;
     match kind {
         Kind::Zip => zip_archive::extract(source, destination, control, false),
@@ -125,9 +139,9 @@ pub(crate) fn safe_path(destination: &Path, name: &str) -> Result<PathBuf, Extra
             || part.chars().any(|character| character < '\u{20}')
             || windows_device_name(part)
         {
-            return Err(ExtractError::Invalid(format!(
-                "不支持的压缩包路径 {name:?}"
-            )));
+            return Err(ExtractError::Invalid(
+                Message::from(EngineKey::UnsupportedArchivePath).arg(format!("{name:?}")),
+            ));
         }
         output.push(part);
     }
@@ -154,10 +168,7 @@ fn open_file(path: &Path) -> io::Result<(File, u64)> {
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "无法读取普通文件",
-        ));
+        return Err(Message::from(EngineKey::ReadRegularFile).io(io::ErrorKind::InvalidInput));
     }
     Ok((file, metadata.len()))
 }
@@ -230,17 +241,16 @@ fn copy_member(
                 .read(&mut buffer[..capacity])
                 .map_err(CopyError::Source)?;
             if length as u64 > remaining {
-                return Err(CopyError::Source(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "解出的成员大小超过压缩包目录记录",
-                )));
+                return Err(CopyError::Source(
+                    Message::from(EngineKey::ExtractedTooLong).io(io::ErrorKind::InvalidData),
+                ));
             }
             if length == 0 {
                 if remaining != 0 {
-                    return Err(CopyError::Source(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "解出的成员短于压缩包目录记录",
-                    )));
+                    return Err(CopyError::Source(
+                        Message::from(EngineKey::ExtractedTooShort)
+                            .io(io::ErrorKind::UnexpectedEof),
+                    ));
                 }
                 return Ok(());
             }

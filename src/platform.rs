@@ -1,6 +1,7 @@
 use std::io::{self, IsTerminal};
 #[cfg(not(windows))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(not(windows))]
 mod unix;
@@ -14,7 +15,7 @@ use windows as native;
 
 pub use native::{
     attach_console, forget_password, menu_registered, open_directory, read_passwords,
-    register_menu, remember_password, remove_menu, run_explorer_server,
+    refresh_menu_language, register_menu, remember_password, remove_menu, run_explorer_server,
 };
 
 #[cfg(windows)]
@@ -22,10 +23,25 @@ pub use windows::read_selection;
 
 #[cfg(not(windows))]
 pub fn read_selection(_path: &Path) -> io::Result<Vec<PathBuf>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "此平台不支持资源管理器选区",
-    ))
+    use crate::i18n::{AppKey, Message};
+    Err(Message::from(AppKey::ExplorerSelectionUnsupported).io(io::ErrorKind::Unsupported))
+}
+
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    let absolute_env = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    #[cfg(windows)]
+    let base = absolute_env("LOCALAPPDATA").or_else(|| absolute_env("APPDATA"));
+    #[cfg(target_os = "macos")]
+    let base = absolute_env("HOME").map(|path| path.join("Library/Application Support"));
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let base = absolute_env("XDG_CONFIG_HOME")
+        .or_else(|| absolute_env("HOME").map(|path| path.join(".config")));
+
+    base.map(|path| path.join("NestedUnpack"))
 }
 
 pub fn read_console_password() -> io::Result<String> {

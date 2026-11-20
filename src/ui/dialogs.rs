@@ -5,7 +5,12 @@ use eframe::egui::{
 use egui_phosphor::regular as icon;
 use zeroize::Zeroize as _;
 
-use crate::{THIRD_PARTY_NOTICES, platform, session::PasswordReply};
+use crate::{
+    THIRD_PARTY_NOTICES,
+    i18n::{self, AppKey, Message, UiKey, tr},
+    platform,
+    session::PasswordReply,
+};
 
 use super::{
     App, PasswordPrompt, short_path,
@@ -27,7 +32,9 @@ impl Settings {
 
     pub fn menu() -> Self {
         Self::Menu(MenuSettings {
-            registered: platform::menu_registered().map_err(|e| e.to_string()),
+            registered: platform::menu_registered().map_err(|error| {
+                Message::from(UiKey::CheckMenuFailed).arg(Message::from_error(error))
+            }),
         })
     }
 }
@@ -38,7 +45,7 @@ pub(super) struct Book {
     selected: Option<usize>,
     new_password: String,
     confirming: bool,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 impl Book {
@@ -50,7 +57,11 @@ impl Book {
                 self.selected = self.selected.filter(|&index| index < self.values.len());
                 self.error = None;
             }
-            Err(error) => self.error = Some(format!("无法读取密码簿。{error}")),
+            Err(error) => {
+                self.error = Some(
+                    Message::from(UiKey::ReadPasswordBookFailed).arg(Message::from_error(error)),
+                );
+            }
         }
         self.confirming = false;
     }
@@ -65,7 +76,10 @@ impl Book {
                     .position(|password| password == &self.new_password);
                 self.new_password.zeroize();
             }
-            Err(error) => self.error = Some(format!("无法保存密码。{error}")),
+            Err(error) => {
+                self.error =
+                    Some(Message::from(UiKey::SavePasswordFailed).arg(Message::from_error(error)));
+            }
         }
     }
 
@@ -80,7 +94,9 @@ impl Book {
             }
             Err(error) => {
                 self.confirming = false;
-                self.error = Some(format!("无法删除密码。{error}"));
+                self.error = Some(
+                    Message::from(UiKey::DeletePasswordFailed).arg(Message::from_error(error)),
+                );
             }
         }
     }
@@ -100,7 +116,7 @@ impl Drop for PasswordPrompt {
 }
 
 pub(super) struct MenuSettings {
-    registered: Result<bool, String>,
+    registered: Result<bool, Message>,
 }
 
 pub(super) fn show(app: &mut App, ctx: &Context, p: Palette) {
@@ -144,12 +160,14 @@ fn show_password(prompt: &mut PasswordPrompt, ctx: &Context, p: Palette) -> Pass
         .frame(p.card(20))
         .show(ctx, |ui| {
             ui.set_width(410.0);
-            title(ui, p, icon::KEY, "压缩包密码");
-            let context = format!(
-                "{} · 第 {} 层 · {}",
-                prompt.request.format,
-                prompt.request.depth,
-                short_path(&prompt.request.archive)
+            title(ui, p, icon::KEY, tr(UiKey::ArchivePassword));
+            let context = i18n::format(
+                UiKey::PasswordContext,
+                &[
+                    &tr(prompt.request.format),
+                    &prompt.request.depth,
+                    &short_path(&prompt.request.archive),
+                ],
             );
             ui.add(Label::new(RichText::new(&context).color(p.muted)).truncate())
                 .on_hover_text(prompt.request.archive.display().to_string());
@@ -165,7 +183,7 @@ fn show_password(prompt: &mut PasswordPrompt, ctx: &Context, p: Palette) -> Pass
                 .on_hover_text(prompt.request.source.display().to_string());
             }
             if prompt.request.retry {
-                ui.label(RichText::new("密码验证未通过，请重试。").color(p.danger));
+                ui.label(RichText::new(tr(UiKey::PasswordRetry)).color(p.danger));
             }
             ui.add_space(3.0);
 
@@ -175,7 +193,7 @@ fn show_password(prompt: &mut PasswordPrompt, ctx: &Context, p: Palette) -> Pass
                     [ui.available_width() - 44.0, 34.0],
                     TextEdit::singleline(&mut prompt.value)
                         .password(!prompt.reveal)
-                        .hint_text("输入密码")
+                        .hint_text(tr(UiKey::EnterPassword))
                         .vertical_align(Align::Center)
                         .margin(egui::Margin::symmetric(10, 4)),
                 );
@@ -188,25 +206,27 @@ fn show_password(prompt: &mut PasswordPrompt, ctx: &Context, p: Palette) -> Pass
                 } else {
                     icon::EYE
                 };
-                let label = if prompt.reveal {
-                    "隐藏密码"
+                let label = tr(if prompt.reveal {
+                    UiKey::HidePassword
                 } else {
-                    "显示密码"
-                };
+                    UiKey::ShowPassword
+                });
                 if style::icon_button(ui, symbol, label).clicked() {
                     prompt.reveal = !prompt.reveal;
                 }
             });
-            ui.checkbox(&mut prompt.remember, "验证成功后保存到密码簿");
+            ui.checkbox(&mut prompt.remember, tr(UiKey::RememberPassword));
             ui.add_space(6.0);
             style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
                 let submit = ui
                     .add_enabled(
                         !prompt.value.is_empty(),
-                        style::primary(icon::CHECK, "继续解压", p),
+                        style::primary(icon::CHECK, tr(UiKey::ContinueExtraction), p),
                     )
                     .clicked();
-                let skip = ui.add(style::button(icon::X, "跳过此文件")).clicked()
+                let skip = ui
+                    .add(style::button(icon::X, tr(UiKey::SkipFile)))
+                    .clicked()
                     || ui.input_mut(|input| {
                         input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                     });
@@ -234,12 +254,12 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
         .frame(p.card(16))
         .show(ctx, |ui| {
             ui.set_width(410.0);
-            title(ui, p, icon::KEY, "密码簿");
-            ui.label(RichText::new(format!("已保存 {} 个密码", book.values.len())).color(p.muted));
+            title(ui, p, icon::KEY, tr(UiKey::PasswordBook));
+            ui.label(RichText::new(i18n::saved_passwords(book.values.len())).color(p.muted));
             p.card(7).fill(p.softened).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 if book.values.is_empty() {
-                    ui.label(RichText::new("密码簿为空").color(p.muted));
+                    ui.label(RichText::new(tr(UiKey::EmptyPasswordBook)).color(p.muted));
                 } else {
                     ScrollArea::vertical()
                         .auto_shrink([false, true])
@@ -278,11 +298,14 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
 
             if book.confirming {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("删除所选密码？").color(p.danger));
-                    if ui.add(style::button(icon::TRASH, "确认删除")).clicked() {
+                    ui.label(RichText::new(tr(UiKey::DeletePasswordConfirmation)).color(p.danger));
+                    if ui
+                        .add(style::button(icon::TRASH, tr(UiKey::ConfirmDelete)))
+                        .clicked()
+                    {
                         book.remove();
                     }
-                    if ui.button("保留").clicked() {
+                    if ui.button(tr(UiKey::KeepPassword)).clicked() {
                         book.confirming = false;
                     }
                 });
@@ -291,7 +314,7 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
                 let entry = ui.add_sized(
                     [ui.available_width() - 94.0, 34.0],
                     TextEdit::singleline(&mut book.new_password)
-                        .hint_text("添加密码")
+                        .hint_text(tr(UiKey::AddPassword))
                         .vertical_align(Align::Center)
                         .margin(egui::Margin::symmetric(10, 4)),
                 );
@@ -300,7 +323,7 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
                 let add = ui
                     .add_enabled(
                         !book.new_password.is_empty(),
-                        style::primary(icon::PLUS, "添加", p),
+                        style::primary(icon::PLUS, tr(UiKey::Add), p),
                     )
                     .clicked();
                 if !book.new_password.is_empty() && (add || enter) {
@@ -309,13 +332,15 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
                 }
             });
             if let Some(error) = &book.error {
-                ui.label(RichText::new(error).color(p.danger));
+                ui.label(RichText::new(error.render(i18n::current())).color(p.danger));
             }
             style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
-                let close = ui.add(style::button(icon::X, "关闭")).clicked();
+                let close = ui.add(style::button(icon::X, tr(UiKey::Close))).clicked();
                 if book.selected.is_some()
                     && !book.confirming
-                    && ui.add(style::button(icon::TRASH, "删除所选")).clicked()
+                    && ui
+                        .add(style::button(icon::TRASH, tr(UiKey::DeleteSelected)))
+                        .clicked()
                 {
                     book.confirming = true;
                 }
@@ -334,14 +359,18 @@ fn show_menu(menu: &mut MenuSettings, ctx: &Context, p: Palette) -> SettingsActi
         .frame(p.card(20))
         .show(ctx, |ui| {
             ui.set_width(427.0);
-            title(ui, p, icon::GEAR, "资源管理器右键菜单");
+            title(ui, p, icon::GEAR, tr(UiKey::ExplorerContextMenu));
             ui.label(
-                RichText::new("为当前 Windows 用户添加「解开嵌套压缩包」命令。").color(p.muted),
+                RichText::new(i18n::format(
+                    UiKey::MenuExplanation,
+                    &[&tr(AppKey::ExplorerMenuLabel)],
+                ))
+                .color(p.muted),
             );
             let (status, color) = match &menu.registered {
-                Ok(true) => ("已注册到当前位置".into(), p.positive),
-                Ok(false) => ("未注册到当前位置".into(), p.muted),
-                Err(error) => (error.clone(), p.danger),
+                Ok(true) => (tr(UiKey::MenuRegistered).into(), p.positive),
+                Ok(false) => (tr(UiKey::MenuUnregistered).into(), p.muted),
+                Err(error) => (error.render(i18n::current()), p.danger),
             };
             p.card(10).fill(p.softened).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -349,24 +378,33 @@ fn show_menu(menu: &mut MenuSettings, ctx: &Context, p: Palette) -> SettingsActi
             });
             ui.horizontal(|ui| {
                 if ui
-                    .add(style::primary(icon::PLUS, "注册到当前位置", p))
+                    .add(style::primary(icon::PLUS, tr(UiKey::RegisterMenu), p))
                     .clicked()
                 {
                     menu.registered = platform::register_menu()
                         .and_then(|_| platform::menu_registered())
-                        .map_err(|e| format!("无法注册右键菜单。{e}"));
+                        .map_err(|error| {
+                            Message::from(UiKey::RegisterMenuFailed).arg(Message::from_error(error))
+                        });
                 }
-                if ui.add(style::button(icon::TRASH, "移除菜单")).clicked() {
+                if ui
+                    .add(style::button(icon::TRASH, tr(UiKey::RemoveMenu)))
+                    .clicked()
+                {
                     menu.registered = platform::remove_menu()
                         .and_then(|_| platform::menu_registered())
-                        .map_err(|e| format!("无法移除右键菜单。{e}"));
+                        .map_err(|error| {
+                            Message::from(UiKey::RemoveMenuFailed).arg(Message::from_error(error))
+                        });
                 }
             });
             ui.separator();
             style::row(ui, 38.0, Layout::left_to_right(Align::Center), |ui| {
-                let licenses = ui.add(style::button(icon::FILE, "第三方许可")).clicked();
+                let licenses = ui
+                    .add(style::button(icon::FILE, tr(UiKey::Licenses)))
+                    .clicked();
                 let close = style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
-                    ui.add(style::button(icon::X, "关闭")).clicked()
+                    ui.add(style::button(icon::X, tr(UiKey::Close))).clicked()
                 });
                 if licenses {
                     SettingsAction::Licenses
@@ -389,7 +427,7 @@ fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
         .frame(p.card(20))
         .show(ctx, |ui| {
             ui.set_width(ui.ctx().content_rect().width().min(750.0) - 70.0);
-            title(ui, p, icon::FILE, "第三方许可");
+            title(ui, p, icon::FILE, tr(UiKey::Licenses));
             ScrollArea::vertical()
                 .min_scrolled_height(0.0)
                 .max_height((ui.ctx().content_rect().height() - 155.0).max(0.0))
@@ -400,7 +438,7 @@ fn show_licenses(ctx: &Context, p: Palette) -> SettingsAction {
                     );
                 });
             style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
-                ui.add(style::button(icon::X, "关闭")).clicked()
+                ui.add(style::button(icon::X, tr(UiKey::Close))).clicked()
             })
         });
     if modal.inner || modal.should_close() {
@@ -449,7 +487,7 @@ mod tests {
                 output.shapes
             };
             let geometry = |shapes: &[egui::epaint::ClippedShape]| {
-                [first, &second, "添加密码"].map(|label| {
+                [first, &second, tr(UiKey::AddPassword)].map(|label| {
                     shapes
                         .iter()
                         .find_map(|shape| match &shape.shape {

@@ -11,6 +11,8 @@ use ::windows::Win32::System::Registry::{
 use ::windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use ::windows::core::{GUID, PCWSTR};
 
+use crate::i18n::{AppKey, Message, tr};
+
 use super::super::{equal_ignore_case, wide};
 
 // A separate command and COM class avoid reusing a running legacy launcher.
@@ -20,7 +22,6 @@ const VERB: &str = r"Software\Classes\*\shell\NestedUnpack.ExtractArchives";
 const COMMAND: &str = r"Software\Classes\*\shell\NestedUnpack.ExtractArchives\command";
 const CLASS_KEY: &str = r"Software\Classes\CLSID\{4F608ACE-D6E4-406B-8972-1DA68EB54EF8}";
 const SERVER: &str = r"Software\Classes\CLSID\{4F608ACE-D6E4-406B-8972-1DA68EB54EF8}\LocalServer32";
-const MENU_LABEL: &str = "解开嵌套压缩包";
 const APPLIES_TO: &str = concat!(
     r#"System.FileExtension:=".zip" OR System.FileExtension:=".zipx" OR System.FileExtension:=".mp4" OR "#,
     r#"System.FileExtension:=".rar" OR System.FileExtension:=".7z" OR System.FileName:~>".7z.001""#,
@@ -62,7 +63,6 @@ pub fn menu_registered() -> io::Result<bool> {
         (SERVER, "", command.as_os_str()),
         (SERVER, "ServerExecutable", exe),
         (COMMAND, "DelegateExecute", OsStr::new(CLASS_TEXT)),
-        (VERB, "MUIVerb", OsStr::new(MENU_LABEL)),
         (VERB, "MultiSelectModel", OsStr::new("Player")),
         (VERB, "AppliesTo", OsStr::new(APPLIES_TO)),
     ];
@@ -86,6 +86,23 @@ pub fn menu_registered() -> io::Result<bool> {
     Ok(true)
 }
 
+pub fn refresh_menu_language() -> io::Result<()> {
+    if !menu_registered()? {
+        return Ok(());
+    }
+    let label = OsStr::new(tr(AppKey::ExplorerMenuLabel));
+    match read_value(VERB, "MUIVerb") {
+        Ok(value) if value == label => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let key = Key::open(VERB, KEY_SET_VALUE, KEY_WOW64_64KEY)?;
+    write_value(&key, "MUIVerb", label)?;
+    let _notify = AssociationChange;
+    Ok(())
+}
+
 pub fn register_menu() -> io::Result<()> {
     let exe = std::env::current_exe()?;
     let _notify = AssociationChange;
@@ -100,7 +117,7 @@ pub fn register_menu() -> io::Result<()> {
     write_values(
         VERB,
         &[
-            ("MUIVerb", OsStr::new(MENU_LABEL)),
+            ("MUIVerb", OsStr::new(tr(AppKey::ExplorerMenuLabel))),
             ("NeverDefault", OsStr::new("")),
             ("MultiSelectModel", OsStr::new("Player")),
             ("AppliesTo", OsStr::new(APPLIES_TO)),
@@ -188,13 +205,16 @@ fn check(status: WIN32_ERROR) -> io::Result<()> {
 fn write_values(path: &str, values: &[(&str, &OsStr)]) -> io::Result<()> {
     let key = Key::create(path)?;
     for (name, data) in values {
-        let name = wide(name.as_ref())?;
-        let data: Vec<u8> = wide(data)?.into_iter().flat_map(u16::to_le_bytes).collect();
-        let status =
-            unsafe { RegSetValueExW(key.0, PCWSTR(name.as_ptr()), None, REG_SZ, Some(&data)) };
-        check(status)?;
+        write_value(&key, name, data)?;
     }
     Ok(())
+}
+
+fn write_value(key: &Key, name: &str, data: &OsStr) -> io::Result<()> {
+    let name = wide(name.as_ref())?;
+    let data: Vec<u8> = wide(data)?.into_iter().flat_map(u16::to_le_bytes).collect();
+    let status = unsafe { RegSetValueExW(key.0, PCWSTR(name.as_ptr()), None, REG_SZ, Some(&data)) };
+    check(status)
 }
 
 fn read_value(path: &str, name: &str) -> io::Result<OsString> {
@@ -215,10 +235,7 @@ fn read_value(path: &str, name: &str) -> io::Result<OsString> {
     };
     check(status)?;
     if size % 2 != 0 || size > 128 << 10 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "注册表字符串无效",
-        ));
+        return Err(Message::from(AppKey::InvalidRegistryString).io(io::ErrorKind::InvalidData));
     }
     let mut buffer = vec![0u16; size as usize / 2];
     let status = unsafe {

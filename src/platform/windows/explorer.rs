@@ -28,11 +28,13 @@ use ::windows::core::{
     BOOL, Error, GUID, IUnknown, Interface, PCWSTR, PWSTR, Ref, Result, implement, w,
 };
 
+use crate::i18n::{AppKey, Message};
+
 use super::{SELECTION_PREFIX, SELECTION_SUFFIX, selection_path, wide};
 
 mod registry;
 
-pub use registry::{menu_registered, register_menu, remove_menu};
+pub use registry::{menu_registered, refresh_menu_language, register_menu, remove_menu};
 
 const RUN_SELECTION: u32 = WM_APP + 2;
 
@@ -249,7 +251,7 @@ fn serve(clsid: &GUID) -> Result<()> {
                     if let Err(error) = result
                         && !pending.no_ui
                     {
-                        show_error(&error);
+                        show_error(error);
                     }
                     server.idle_from.set(Instant::now());
                 }
@@ -272,8 +274,11 @@ fn serve(clsid: &GUID) -> Result<()> {
     }
 }
 
-fn show_error(error: &io::Error) {
-    if let Ok(message) = wide(format!("无法启动批量解压。\n{error}").as_ref()) {
+fn show_error(error: io::Error) {
+    let description = Message::from(AppKey::ExplorerLaunchFailed)
+        .arg(Message::from_error(error))
+        .to_string();
+    if let Ok(message) = wide(description.as_ref()) {
         unsafe {
             MessageBoxW(
                 None,
@@ -298,10 +303,7 @@ impl Drop for ShellString {
 fn write_selection(output: &mut impl Write, items: &IShellItemArray) -> io::Result<()> {
     let count = unsafe { items.GetCount() }.map_err(io::Error::other)?;
     if count == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "选区内没有可处理的文件",
-        ));
+        return Err(Message::from(AppKey::NoUsableSelection).io(io::ErrorKind::InvalidInput));
     }
     for index in 0..count {
         let item = unsafe { items.GetItemAt(index) }.map_err(io::Error::other)?;
@@ -309,17 +311,17 @@ fn write_selection(output: &mut impl Write, items: &IShellItemArray) -> io::Resu
             unsafe { item.GetDisplayName(SIGDN_FILESYSPATH) }.map_err(io::Error::other)?,
         );
         if name.0.is_null() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "选区含无效的文件路径",
-            ));
+            return Err(
+                Message::from(AppKey::InvalidExplorerFilePath).io(io::ErrorKind::InvalidData)
+            );
         }
         let path = selection_path(unsafe { name.0.as_wide() });
         let name = path
             .to_str()
             .filter(|name| path.is_absolute() && !name.contains(['\r', '\n']));
-        let name =
-            name.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "选区含无效的文件路径"))?;
+        let name = name.ok_or_else(|| {
+            Message::from(AppKey::InvalidExplorerFilePath).io(io::ErrorKind::InvalidData)
+        })?;
         writeln!(output, "{name}")?;
     }
     Ok(())

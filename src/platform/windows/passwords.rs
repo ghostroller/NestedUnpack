@@ -12,16 +12,15 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::platform::{change_passwords, normalize_passwords};
+use crate::{
+    i18n::{AppKey, Message},
+    platform::{change_passwords, config_dir, normalize_passwords},
+};
 
 fn book_path() -> io::Result<PathBuf> {
-    ["LOCALAPPDATA", "APPDATA"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .map(PathBuf::from)
-        .find(|path| path.is_absolute())
-        .map(|path| path.join("NestedUnpack").join("passwords.dpapi"))
-        .ok_or_else(|| io::Error::other("无法定位当前用户的密码簿目录"))
+    config_dir()
+        .map(|directory| directory.join("passwords.dpapi"))
+        .ok_or_else(|| Message::from(AppKey::NoConfigDirectory).io(io::ErrorKind::Other))
 }
 
 fn lock_file(path: &Path) -> io::Result<File> {
@@ -86,7 +85,7 @@ fn read_unlocked(path: &Path) -> io::Result<Vec<String>> {
 }
 
 fn invalid_format() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "密码簿格式无效")
+    Message::from(AppKey::InvalidPasswordBook).io(io::ErrorKind::InvalidData)
 }
 
 fn encode_book(passwords: &[String]) -> io::Result<Vec<u8>> {
@@ -171,11 +170,13 @@ fn protect(data: &[u8], encrypt: bool) -> io::Result<Vec<u8>> {
     };
     result.map_err(|error| {
         let action = if encrypt {
-            "无法加密密码簿"
+            AppKey::EncryptPasswordBookFailed
         } else {
-            "无法解密密码簿"
+            AppKey::DecryptPasswordBookFailed
         };
-        io::Error::other(format!("{action}：{error}"))
+        Message::from(action)
+            .arg(error.to_string())
+            .io(io::ErrorKind::Other)
     })?;
     if output.0.pbData.is_null() || output.0.cbData == 0 {
         return Err(invalid_format());

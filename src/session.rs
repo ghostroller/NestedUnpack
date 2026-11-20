@@ -1,4 +1,5 @@
 use crate::archive::{self, Control, ExtractError, Kind};
+use crate::i18n::{EngineKey, Message};
 use crate::platform;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -12,6 +13,8 @@ use zeroize::Zeroizing;
 
 #[cfg(test)]
 mod tests;
+
+const MAX_NESTING_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Status {
@@ -28,7 +31,7 @@ pub(crate) struct Layer {
     pub(crate) id: usize,
     pub(crate) parent: Option<usize>,
     pub(crate) name: String,
-    pub(crate) format: &'static str,
+    pub(crate) format: EngineKey,
     pub(crate) status: Status,
     pub(crate) volumes: Vec<String>,
     pub(crate) files: Option<usize>,
@@ -47,7 +50,7 @@ pub(crate) enum ArchiveMember {
 pub(crate) struct JobResult {
     pub(crate) status: Status,
     pub(crate) output: Option<PathBuf>,
-    pub(crate) detail: String,
+    pub(crate) detail: Option<Message>,
     pub(crate) files: usize,
     pub(crate) archives: usize,
     pub(crate) depth: usize,
@@ -57,7 +60,7 @@ pub(crate) struct JobResult {
 pub(crate) struct PasswordRequest {
     pub(crate) source: PathBuf,
     pub(crate) archive: PathBuf,
-    pub(crate) format: &'static str,
+    pub(crate) format: EngineKey,
     pub(crate) depth: usize,
     pub(crate) retry: bool,
 }
@@ -96,7 +99,7 @@ pub(crate) enum Event {
     Stage {
         index: usize,
         layer: Option<usize>,
-        description: String,
+        description: EngineKey,
         percent: Option<u8>,
     },
     Archive {
@@ -107,7 +110,7 @@ pub(crate) enum Event {
         index: usize,
         result: JobResult,
     },
-    Warning(String),
+    Warning(Message),
     Completed(BatchSummary),
 }
 
@@ -167,7 +170,9 @@ fn run(
         paths: paths.clone(),
     });
     let stored = platform::read_passwords().unwrap_or_else(|err| {
-        observer.event(Event::Warning(format!("无法读取密码簿 · {err}")));
+        observer.event(Event::Warning(
+            Message::from(EngineKey::PasswordBookReadWarning).arg(Message::from_error(err)),
+        ));
         Vec::new()
     });
     let mut session = Session {
@@ -195,24 +200,27 @@ fn run(
             session.extract_source(&source)
         };
         let (status, output, files, detail) = match result {
-            Ok(Some((path, files))) => (Status::Success, Some(path), files, String::new()),
+            Ok(Some((path, files))) => (Status::Success, Some(path), files, None),
             Ok(None) => (
                 Status::Skipped,
                 None,
                 0,
-                if outer_only {
-                    "未找到外层 RAR 成员"
+                Some(if outer_only {
+                    EngineKey::NoOuterRar.into()
                 } else {
-                    "无法识别为 ZIP、RAR 或 7z"
-                }
-                .into(),
+                    EngineKey::UnrecognizedArchive.into()
+                }),
             ),
-            Err(_) if session.canceled() => {
-                (Status::Canceled, None, 0, "已停止处理当前文件".into())
+            Err(error) if session.canceled() || matches!(error, ExtractError::Canceled) => (
+                Status::Canceled,
+                None,
+                0,
+                Some(EngineKey::CurrentFileCanceled.into()),
+            ),
+            Err(ExtractError::Skipped) => {
+                (Status::Skipped, None, 0, Some(EngineKey::NoPassword.into()))
             }
-            Err(ExtractError::Skipped) => (Status::Skipped, None, 0, "未输入密码".into()),
-            Err(ExtractError::Canceled) => (Status::Canceled, None, 0, "已停止处理当前文件".into()),
-            Err(err) => (Status::Failed, None, 0, err.to_string()),
+            Err(error) => (Status::Failed, None, 0, Some(error.into_message())),
         };
         match status {
             Status::Success => summary.success += 1,
@@ -264,12 +272,12 @@ impl SourceArchive {
         self.base.as_deref().unwrap_or_else(|| self.path())
     }
 
-    fn format(&self) -> &'static str {
+    fn format(&self) -> EngineKey {
         match (self.kind, self.base.is_some()) {
-            (Kind::Zip, _) => "ZIP",
-            (Kind::Rar, _) => "RAR",
-            (Kind::SevenZip, true) => "7z 分卷",
-            (Kind::SevenZip, false) => "7z",
+            (Kind::Zip, _) => EngineKey::FormatZip,
+            (Kind::Rar, _) => EngineKey::FormatRar,
+            (Kind::SevenZip, true) => EngineKey::FormatSplitSevenZip,
+            (Kind::SevenZip, false) => EngineKey::FormatSevenZip,
         }
     }
 }
@@ -298,11 +306,11 @@ impl Session<'_> {
         }
     }
 
-    fn stage(&mut self, layer: Option<usize>, description: impl Into<String>, percent: Option<u8>) {
+    fn stage(&mut self, layer: Option<usize>, description: EngineKey, percent: Option<u8>) {
         self.observer.event(Event::Stage {
             index: self.index,
             layer,
-            description: description.into(),
+            description,
             percent,
         });
     }
@@ -348,7 +356,7 @@ impl Session<'_> {
     }
 
     fn extract_source(&mut self, source: &Path) -> Result<Option<(PathBuf, usize)>, ExtractError> {
-        self.stage(None, "识别压缩格式", None);
+        self.stage(None, EngineKey::ScanArchive, None);
         let Some(archive) = find_source(source)? else {
             return Ok(None);
         };
@@ -359,7 +367,7 @@ impl Session<'_> {
         let layer = self.create_layer(&archive, None, None);
         let unpacked = self.unpack_tree(source, stage.path(), archive, layer)?;
         self.check_cancel()?;
-        self.stage(None, "写入解压结果", None);
+        self.stage(None, EngineKey::PublishResults, None);
         let output = publish(unpacked.directory.path(), &output_name, false)?;
         Ok(Some((output, unpacked.files)))
     }
@@ -412,15 +420,14 @@ impl Session<'_> {
         let mut previous = None;
         loop {
             self.check_cancel()?;
-            if layer.depth > 64 {
-                return Err(
-                    self.layer_error(&mut layer, ExtractError::Invalid("嵌套层数超过 64".into()))
-                );
+            if layer.depth > MAX_NESTING_DEPTH {
+                let detail = Message::from(EngineKey::NestingTooDeep).arg(MAX_NESTING_DEPTH);
+                return Err(self.layer_error(&mut layer, ExtractError::Invalid(detail)));
             }
             self.depth = self.depth.max(layer.depth);
             layer.status = Status::Running;
             self.announce(&layer);
-            self.stage(Some(layer.id), "读取压缩包目录", None);
+            self.stage(Some(layer.id), EngineKey::ReadArchiveDirectory, None);
             let directory = Builder::new().prefix("layer-").tempdir_in(work)?;
             let result = archive::extract(
                 archive.kind,
@@ -436,7 +443,7 @@ impl Session<'_> {
                 stage.close()?;
             }
             self.check_cancel()?;
-            self.stage(Some(layer.id), "检查内层文件", None);
+            self.stage(Some(layer.id), EngineKey::ScanNestedFiles, None);
             let mut empty_directories = self.observer.wants_archive_contents().then(Vec::new);
             let files = extracted_files(directory.path(), empty_directories.as_mut())?;
             let archives = find_nested(&files).map_err(|err| self.layer_error(&mut layer, err))?;
@@ -473,7 +480,7 @@ impl Session<'_> {
                 let parts = child.parts.clone();
                 let nested = self.unpack_tree(source, work, child, node)?;
                 self.check_cancel()?;
-                self.stage(None, "整理内层解压结果", None);
+                self.stage(None, EngineKey::PublishNestedResults, None);
                 publish(nested.directory.path(), &output_name, false)?;
                 for part in parts {
                     fs::remove_file(part)?;
@@ -496,7 +503,12 @@ impl Session<'_> {
         self.announce(layer);
         match error {
             ExtractError::Canceled | ExtractError::Skipped => error,
-            _ => ExtractError::Invalid(format!("第 {} 层 {} · {error}", layer.depth, layer.name)),
+            _ => ExtractError::Invalid(
+                Message::from(EngineKey::NestedFailure)
+                    .arg(layer.depth)
+                    .arg(layer.name.as_str())
+                    .arg(error.into_message()),
+            ),
         }
     }
 
@@ -548,11 +560,11 @@ struct LayerControl<'a> {
 }
 
 impl LayerControl<'_> {
-    fn stage(&mut self, description: &'static str, percent: Option<u8>) {
+    fn stage(&mut self, description: EngineKey, percent: Option<u8>) {
         self.observer.event(Event::Stage {
             index: self.index,
             layer: Some(self.layer),
-            description: description.into(),
+            description,
             percent,
         });
     }
@@ -569,7 +581,7 @@ impl Control for LayerControl<'_> {
             .map(|total| ((u128::from(done) * 100 / u128::from(total)).min(100)) as u8);
         if self.progress != Some(percent) {
             self.progress = Some(percent);
-            self.stage("解压当前压缩包", percent);
+            self.stage(EngineKey::ExtractCurrentArchive, percent);
         }
     }
 
@@ -598,11 +610,11 @@ impl Control for LayerControl<'_> {
             );
         }
         if let Some(candidate) = self.candidates.pop_front() {
-            self.stage("尝试已知密码", None);
+            self.stage(EngineKey::TryKnownPassword, None);
             return Ok((*candidate).clone());
         }
         self.request.retry = self.asked && retry;
-        self.stage("等待输入密码", None);
+        self.stage(EngineKey::AwaitPassword, None);
         let reply = self.observer.password(self.request.clone(), self.cancel);
         if self.canceled() {
             return Err(ExtractError::Canceled);
@@ -612,7 +624,7 @@ impl Control for LayerControl<'_> {
             .ok_or(ExtractError::Skipped)?;
         self.asked = true;
         self.remember = reply.remember;
-        self.stage("验证输入的密码", None);
+        self.stage(EngineKey::CheckPassword, None);
         Ok(reply.value)
     }
 
@@ -626,9 +638,9 @@ impl Control for LayerControl<'_> {
                 Ok(()) if !self.stored.iter().any(|saved| saved == password) => {
                     self.stored.insert(0, password.to_owned());
                 }
-                Err(err) => self
-                    .observer
-                    .event(Event::Warning(format!("密码未能保存 · {err}"))),
+                Err(err) => self.observer.event(Event::Warning(
+                    Message::from(EngineKey::PasswordSaveWarning).arg(Message::from_error(err)),
+                )),
                 _ => {}
             }
         }
@@ -649,8 +661,9 @@ fn path_key(path: &Path) -> OsString {
 }
 
 fn parent(path: &Path) -> io::Result<&Path> {
-    path.parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "无法定位源目录"))
+    path.parent().ok_or_else(|| {
+        Message::from(EngineKey::MissingSourceDirectory).io(io::ErrorKind::InvalidInput)
+    })
 }
 
 fn volume_name(path: &Path) -> Option<(PathBuf, usize)> {
@@ -673,7 +686,9 @@ fn find_source(source: &Path) -> Result<Option<SourceArchive>, ExtractError> {
             }
         }
         if !volumes.iter().any(|(number, _)| *number == selected) {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "无法读取选中的 7z 分卷").into());
+            return Err(Message::from(EngineKey::ReadSelectedVolume)
+                .io(io::ErrorKind::NotFound)
+                .into());
         }
         return ordered_volumes(base, volumes);
     }
@@ -731,31 +746,33 @@ fn ordered_volumes(
     volumes.sort_by_key(|(number, _)| *number);
     let Some((1, first)) = volumes.first() else {
         return if named_7z {
-            Err(ExtractError::Invalid(format!(
-                "缺少 7z 首分卷 {}.001",
-                base.display()
-            )))
+            Err(ExtractError::Invalid(
+                Message::from(EngineKey::MissingFirstSevenZipVolume)
+                    .arg(format!("{}.001", base.display())),
+            ))
         } else {
             Ok(None)
         };
     };
     if archive::detect(first, false)? != Some(Kind::SevenZip) {
         return if named_7z {
-            Err(ExtractError::Invalid(format!(
-                "无法识别 7z 首分卷 {}",
-                first.display()
-            )))
+            Err(ExtractError::Invalid(
+                Message::from(EngineKey::InvalidFirstSevenZipVolume)
+                    .arg(first.display().to_string()),
+            ))
         } else {
             Ok(None)
         };
     }
     for (index, (number, _)) in volumes.iter().enumerate() {
         if *number != index + 1 {
-            return Err(ExtractError::Invalid(format!(
-                "7z 分卷不连续，预期 {}.{:03}",
-                base.display(),
-                index + 1
-            )));
+            return Err(ExtractError::Invalid(
+                Message::from(EngineKey::NonSequentialSevenZipVolume).arg(format!(
+                    "{}.{:03}",
+                    base.display(),
+                    index + 1
+                )),
+            ));
         }
     }
     Ok(Some(SourceArchive {
@@ -806,10 +823,9 @@ fn extracted_files(
             {
                 use std::os::windows::fs::MetadataExt;
                 if entry.metadata()?.file_attributes() & 0x400 != 0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "解压结果中存在重解析点",
-                    ));
+                    return Err(
+                        Message::from(EngineKey::OutputReparsePoint).io(io::ErrorKind::InvalidData)
+                    );
                 }
             }
             if kind.is_dir() {
@@ -817,10 +833,8 @@ fn extracted_files(
             } else if kind.is_file() {
                 files.push(entry.path());
             } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "不支持的解压成员类型",
-                ));
+                return Err(Message::from(EngineKey::UnsupportedExtractedFile)
+                    .io(io::ErrorKind::InvalidData));
             }
         }
         if empty
@@ -838,7 +852,9 @@ fn publish(from: &Path, source: &Path, rar: bool) -> io::Result<PathBuf> {
     let directory = parent(source)?;
     let file_stem = source
         .file_stem()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "无法定位源文件名"))?
+        .ok_or_else(|| {
+            Message::from(EngineKey::MissingSourceFilename).io(io::ErrorKind::InvalidInput)
+        })?
         .to_string_lossy();
     let mut stem = file_stem.as_ref();
     let mut prefix = "";

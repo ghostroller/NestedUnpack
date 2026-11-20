@@ -2,6 +2,8 @@ use std::io::{Cursor, Write};
 
 use zip::{ZipWriter, write::SimpleFileOptions};
 
+use crate::i18n::Language;
+
 use super::*;
 
 #[derive(Default)]
@@ -58,6 +60,27 @@ fn zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         }
     }
     archive.finish().unwrap().into_inner()
+}
+
+#[test]
+fn renders_nested_errors_in_both_languages() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("外层.zip");
+    fs::write(&source, zip(&[("内层/卷{0}.7z.002", b"volume")])).unwrap();
+
+    let mut observer = Recorder::default();
+    let cancel = AtomicBool::new(false);
+    let error = observer
+        .session(&cancel)
+        .extract_source(&source)
+        .unwrap_err()
+        .into_message();
+    let english = error.render(Language::En);
+    let chinese = error.render(Language::ZhCn);
+    assert!(english.starts_with("Level 1, 外层.zip: Missing first 7z volume: "));
+    assert!(chinese.starts_with("第 1 层 外层.zip · 缺少 7z 首分卷 "));
+    assert!(english.ends_with("卷{0}.7z.001"));
+    assert!(chinese.ends_with("卷{0}.7z.001"));
 }
 
 #[test]

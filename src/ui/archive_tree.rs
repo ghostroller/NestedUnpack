@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, ffi::OsString, path::Component};
 use eframe::egui::{RichText, Stroke, Ui, collapsing_header::CollapsingState};
 use egui_phosphor::regular as icon;
 
-use crate::session::ArchiveMember;
+use crate::{
+    i18n::{self, UiKey, tr},
+    session::ArchiveMember,
+};
 
 use super::{
     Job,
@@ -28,9 +31,10 @@ fn archive(ui: &mut Ui, p: Palette, job: &Job, id: usize) {
     let children = job.children.get(&Some(id));
     let has_archive_children = children.is_some() || !node.volumes.is_empty();
     let files = job.file_trees.get(&id).zip(node.contents.as_deref());
-    let mut title = format!("{} · {}", node.name, node.format);
+    let mut title = format!("{} · {}", node.name, tr(node.format));
     if !node.volumes.is_empty() {
-        title.push_str(&format!(" · {} 卷", node.volumes.len()));
+        title.push_str(" · ");
+        title.push_str(&i18n::volume_count(node.volumes.len()));
     }
     let label = RichText::new(title.as_str()).color(color);
     let mut state = (has_archive_children || files.is_some()).then(|| {
@@ -57,9 +61,9 @@ fn archive(ui: &mut Ui, p: Palette, job: &Job, id: usize) {
                 if has_archive_children {
                     let file_count = node.files.unwrap_or_default();
                     let label = if file_count == 0 {
-                        "文件结构".into()
+                        tr(UiKey::Contents).into()
                     } else {
-                        format!("文件结构 · {file_count} 个文件")
+                        i18n::format(UiKey::ContentsCount, &[&i18n::file_count(file_count)])
                     };
                     let mut state = CollapsingState::load_with_default_open(
                         ui.ctx(),

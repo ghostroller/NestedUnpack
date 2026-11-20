@@ -1,37 +1,24 @@
 use std::io;
 use std::path::Path;
 
+use crate::i18n::{AppKey, Message};
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod passwords {
-    use std::env;
     use std::fs::{self, File, OpenOptions};
     use std::io;
     use std::os::unix::fs::OpenOptionsExt;
-    use std::path::PathBuf;
 
     use keyring::{Entry, Error};
     use zeroize::Zeroizing;
 
-    use crate::platform::{change_passwords, normalize_passwords};
+    use crate::platform::{change_passwords, config_dir, normalize_passwords};
+
+    use super::{AppKey, Message};
 
     fn lock_file() -> io::Result<File> {
-        #[cfg(target_os = "linux")]
-        let config = env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|path| path.join(".config"))
-            });
-        #[cfg(target_os = "macos")]
-        let config = env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|path| path.join("Library/Application Support"));
-        let directory = config
-            .filter(|path| path.is_absolute())
-            .ok_or_else(|| io::Error::other("无法定位当前用户的配置目录"))?
-            .join("NestedUnpack");
+        let directory = config_dir()
+            .ok_or_else(|| Message::from(AppKey::NoConfigDirectory).io(io::ErrorKind::Other))?;
         fs::create_dir_all(&directory)?;
         OpenOptions::new()
             .read(true)
@@ -47,7 +34,9 @@ mod passwords {
     }
 
     fn store_error(error: Error) -> io::Error {
-        io::Error::other(format!("无法访问系统密码库：{error}"))
+        Message::from(AppKey::SystemPasswordStoreFailed)
+            .arg(error.to_string())
+            .io(io::ErrorKind::Other)
     }
 
     fn read_unlocked(entry: &Entry) -> io::Result<Vec<String>> {
@@ -58,7 +47,7 @@ mod passwords {
         };
         serde_json::from_slice(&secret)
             .map(normalize_passwords)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "密码簿格式无效"))
+            .map_err(|_| Message::from(AppKey::InvalidPasswordBook).io(io::ErrorKind::InvalidData))
     }
 
     pub fn read_passwords() -> io::Result<Vec<String>> {
@@ -112,10 +101,7 @@ pub fn forget_password(_password: &str) -> io::Result<()> {
 pub fn open_directory(path: &Path) -> io::Result<()> {
     let absolute = std::path::absolute(path)?;
     if !absolute.metadata()?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "输出路径不是文件夹",
-        ));
+        return Err(Message::from(AppKey::OutputNotDirectory).io(io::ErrorKind::NotADirectory));
     }
     #[cfg(target_os = "macos")]
     let program = "/usr/bin/open";
@@ -137,11 +123,15 @@ pub fn open_directory(path: &Path) -> io::Result<()> {
 pub fn attach_console() {}
 
 fn unsupported() -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, "此平台不支持该操作")
+    Message::from(AppKey::PlatformUnsupported).io(io::ErrorKind::Unsupported)
 }
 
 pub fn menu_registered() -> io::Result<bool> {
     Ok(false)
+}
+
+pub fn refresh_menu_language() -> io::Result<()> {
+    Ok(())
 }
 
 pub fn register_menu() -> io::Result<()> {

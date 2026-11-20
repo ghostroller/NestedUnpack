@@ -12,10 +12,14 @@ use ::windows::Win32::UI::Shell::ShellExecuteW;
 use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use ::windows::core::{PCWSTR, w};
 
+use crate::i18n::{AppKey, Message};
+
 mod explorer;
 mod passwords;
 
-pub use explorer::{menu_registered, register_menu, remove_menu, run_explorer_server};
+pub use explorer::{
+    menu_registered, refresh_menu_language, register_menu, remove_menu, run_explorer_server,
+};
 pub use passwords::{forget_password, read_passwords, remember_password};
 
 const SELECTION_PREFIX: &str = "NestedUnpack-Selection-";
@@ -37,10 +41,7 @@ pub fn attach_console() {
 pub fn open_directory(path: &Path) -> io::Result<()> {
     let absolute = std::path::absolute(path)?;
     if !absolute.metadata()?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "输出路径不是文件夹",
-        ));
+        return Err(Message::from(AppKey::OutputNotDirectory).io(io::ErrorKind::NotADirectory));
     }
     let path = wide(absolute.as_os_str())?;
     let _apartment = explorer::ComApartment::enter().ok();
@@ -58,10 +59,9 @@ pub fn open_directory(path: &Path) -> io::Result<()> {
     if result.0 as usize > 32 {
         Ok(())
     } else {
-        Err(io::Error::other(format!(
-            "无法打开输出文件夹（ShellExecute {}）",
-            result.0 as usize
-        )))
+        Err(Message::from(AppKey::OpenOutputShellFailed)
+            .arg(result.0 as usize)
+            .io(io::ErrorKind::Other))
     }
 }
 
@@ -81,10 +81,7 @@ fn read_selection_in(path: &Path, temp: &Path) -> io::Result<Vec<PathBuf>> {
         .and_then(OsStr::to_str)
         .is_some_and(|name| name.starts_with(SELECTION_PREFIX) && name.ends_with(SELECTION_SUFFIX));
     if !correct_parent || !valid_name || !path.symlink_metadata()?.file_type().is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "选区清单路径无效",
-        ));
+        return Err(Message::from(AppKey::InvalidSelectionFile).io(io::ErrorKind::InvalidInput));
     }
     let list = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);
@@ -95,10 +92,7 @@ fn read_selection_in(path: &Path, temp: &Path) -> io::Result<Vec<PathBuf>> {
             if path.is_absolute() && !line.contains('\0') {
                 Ok(path)
             } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "选区清单含无效路径",
-                ))
+                Err(Message::from(AppKey::InvalidSelectionEntry).io(io::ErrorKind::InvalidData))
             }
         })
         .collect()
@@ -107,10 +101,7 @@ fn read_selection_in(path: &Path, temp: &Path) -> io::Result<Vec<PathBuf>> {
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     let mut result: Vec<u16> = value.encode_wide().collect();
     if result.contains(&0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "文本中含空字符",
-        ));
+        return Err(Message::from(AppKey::NullInText).io(io::ErrorKind::InvalidInput));
     }
     result.push(0);
     Ok(result)

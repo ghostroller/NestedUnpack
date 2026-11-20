@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use sevenz_turbo::{ArchiveEntry, ArchiveLimits, ArchiveReader, BlockErrorKind, Error, Password};
 use zeroize::Zeroizing;
 
+use crate::i18n::{EngineKey, Message};
+
 use super::input::JoinedVolumes;
 use super::{
     COPY_BUFFER, Control, CopyError, ExtractError, check_cancel, copy_member, request_password,
@@ -20,7 +22,9 @@ pub(super) fn extract(
     if fs::symlink_metadata(destination)?.file_type().is_symlink()
         || fs::read_dir(destination)?.next().is_some()
     {
-        return Err(ExtractError::Invalid("7z 解压暂存目录必须为空".into()));
+        return Err(ExtractError::Invalid(
+            EngineKey::NonEmptySevenZipStaging.into(),
+        ));
     }
     let mut password = Zeroizing::new(String::new());
     let mut buffer = vec![0; COPY_BUFFER];
@@ -75,7 +79,7 @@ fn extract_attempt(
         validate_entry(entry, destination)?;
         total = total
             .checked_add(entry.size())
-            .ok_or_else(|| ExtractError::Invalid("7z 成员总大小超出支持范围".into()))?;
+            .ok_or_else(|| ExtractError::Invalid(EngineKey::SevenZipContentTooLarge.into()))?;
     }
     let total = (total != 0).then_some(total);
     let mut done = 0;
@@ -120,10 +124,9 @@ fn validate_entry(entry: &ArchiveEntry, destination: &Path) -> Result<(), Extrac
     let attributes = entry.windows_attributes();
     let mode = (attributes >> 16) & 0o170000;
     if entry.is_anti_item() || attributes & 0x400 != 0 || !matches!(mode, 0 | 0o040000 | 0o100000) {
-        return Err(ExtractError::Invalid(format!(
-            "不支持的 7z 成员 {:?}",
-            entry.name()
-        )));
+        return Err(ExtractError::Invalid(
+            Message::from(EngineKey::UnsupportedSevenZipEntry).arg(format!("{:?}", entry.name())),
+        ));
     }
     safe_path(destination, entry.name())?;
     Ok(())
@@ -142,6 +145,13 @@ fn sevenz_error(error: Error) -> ExtractError {
             kind: BlockErrorKind::Password,
             ..
         } => ExtractError::Password,
-        error => ExtractError::Invalid(error.to_string()),
+        error => ExtractError::Invalid(
+            error
+                .io_error()
+                .and_then(|error| error.get_ref())
+                .and_then(|error| error.downcast_ref::<Message>())
+                .cloned()
+                .unwrap_or_else(|| Message::raw(error.to_string())),
+        ),
     }
 }

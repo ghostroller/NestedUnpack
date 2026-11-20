@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod archive;
+mod i18n;
 mod platform;
 mod rar;
 mod session;
@@ -10,6 +11,8 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+
+use crate::i18n::{AppKey, format as localize, tr};
 
 pub(crate) const THIRD_PARTY_NOTICES: &str = include_str!("../THIRD-PARTY-NOTICES.txt");
 
@@ -35,7 +38,7 @@ fn run(mut args: Vec<OsString>) -> i32 {
         "--nested-selection-file" | "--selection-file" => {
             let outer_only = option == "--selection-file";
             if args.len() != 2 {
-                notify_error("无法读取资源管理器选区。");
+                notify_error(tr(AppKey::ReadSelectionFailed));
                 return 2;
             }
             match platform::read_selection(Path::new(&args[1])) {
@@ -47,11 +50,11 @@ fn run(mut args: Vec<OsString>) -> i32 {
                     }
                 }
                 Ok(_) => {
-                    notify_error("选区内没有可处理的文件。");
+                    notify_error(tr(AppKey::NoUsableSelection));
                     2
                 }
                 Err(err) => {
-                    notify_error(&format!("无法读取资源管理器选区。\n{err}"));
+                    notify_error(&format!("{}\n{err}", tr(AppKey::ReadSelectionFailed)));
                     2
                 }
             }
@@ -85,16 +88,14 @@ fn run(mut args: Vec<OsString>) -> i32 {
 }
 
 fn print_usage() {
-    println!("NestedUnpack [文件...]");
-    println!("NestedUnpack --nested <文件> [更多文件...]");
-    println!("NestedUnpack --outer <文件> [更多文件...]");
+    println!("{}", tr(AppKey::Usage));
 }
 
 fn run_gui(paths: Vec<PathBuf>) -> i32 {
     match ui::run(paths) {
         Ok(()) => 0,
         Err(err) => {
-            notify_error(&format!("无法打开解压窗口。\n{err}"));
+            notify_error(&localize(AppKey::OpenWindowFailed, &[&err]));
             1
         }
     }
@@ -145,10 +146,15 @@ impl session::Observer for Console {
             Event::Started { index } => {
                 self.end_line();
                 println!(
-                    "\n文件 {}/{} · {}",
-                    index + 1,
-                    self.paths.len(),
-                    self.paths[index].display()
+                    "\n{}",
+                    localize(
+                        AppKey::ConsoleFile,
+                        &[
+                            &(index + 1),
+                            &self.paths.len(),
+                            &self.paths[index].display()
+                        ],
+                    )
                 );
             }
             Event::Stage {
@@ -156,6 +162,7 @@ impl session::Observer for Console {
                 percent,
                 ..
             } => {
+                let description = tr(description);
                 if let Some(percent) = percent {
                     print!("\r{description} {percent:>3}%");
                     let _ = io::stdout().flush();
@@ -167,23 +174,36 @@ impl session::Observer for Console {
             }
             Event::Archive { node, .. } if node.status == Status::Running => {
                 self.end_line();
-                println!("第 {} 层 · {} · {}", node.depth, node.format, node.name);
+                println!(
+                    "{}",
+                    localize(
+                        AppKey::ConsoleLayer,
+                        &[&node.depth, &tr(node.format), &node.name]
+                    )
+                );
             }
             Event::Finished { result, .. } => {
                 self.end_line();
                 if let Some(output) = result.output {
                     println!(
-                        "解压完成 · {} 个压缩包 · 最深 {} 层 · {} 个文件",
-                        result.archives, result.depth, result.files
+                        "{}",
+                        localize(
+                            AppKey::ConsoleSuccess,
+                            &[&result.archives, &result.depth, &result.files]
+                        )
                     );
-                    println!("已解压到 {}", output.display());
+                    println!("{}", localize(AppKey::OutputAt, &[&output.display()]));
                 } else {
-                    let label = match result.status {
-                        Status::Skipped => "跳过",
-                        Status::Canceled => "已取消",
-                        _ => "失败",
-                    };
-                    println!("{label} · {}", result.detail);
+                    let label = tr(match result.status {
+                        Status::Skipped => AppKey::Skipped,
+                        Status::Canceled => AppKey::Canceled,
+                        _ => AppKey::Failed,
+                    });
+                    if let Some(detail) = result.detail {
+                        println!("{label} · {detail}");
+                    } else {
+                        println!("{label}");
+                    }
                 }
             }
             Event::Warning(message) => {
@@ -193,8 +213,16 @@ impl session::Observer for Console {
             Event::Completed(summary) => {
                 self.end_line();
                 println!(
-                    "\n处理结束 · 共 {} 个文件 · 成功 {} 个 · 跳过 {} 个 · 失败 {} 个",
-                    summary.total, summary.success, summary.skipped, summary.failed
+                    "\n{}",
+                    localize(
+                        AppKey::ConsoleFinished,
+                        &[
+                            &summary.total,
+                            &summary.success,
+                            &summary.skipped,
+                            &summary.failed
+                        ],
+                    )
                 );
             }
             Event::Archive { .. } => {}
@@ -208,9 +236,9 @@ impl session::Observer for Console {
     ) -> Option<session::PasswordReply> {
         self.end_line();
         if request.retry {
-            println!("密码校验失败，请重试。");
+            println!("{}", tr(AppKey::ConsolePasswordRetry));
         }
-        print!("请输入压缩包密码（留空则跳过）");
+        print!("{} ", tr(AppKey::ConsolePasswordPrompt));
         let _ = io::stdout().flush();
         let value = platform::read_console_password().ok()?;
         println!();
