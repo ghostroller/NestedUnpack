@@ -8,25 +8,41 @@ mod passwords {
     use std::fs::{self, File, OpenOptions};
     use std::io;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::path::{Path, PathBuf};
 
     use keyring::{Entry, Error};
     use zeroize::Zeroizing;
 
-    use crate::platform::{change_passwords, config_dir, normalize_passwords};
+    use crate::platform::{
+        append_passwords, change_passwords, config_dir, normalize_passwords,
+        password_backup::ensure_distinct_destination,
+    };
 
     use super::{AppKey, Message};
 
+    fn lock_path() -> io::Result<PathBuf> {
+        config_dir()
+            .map(|directory| directory.join("passwords.lock"))
+            .ok_or_else(|| Message::from(AppKey::NoConfigDirectory).io(io::ErrorKind::Other))
+    }
+
     fn lock_file() -> io::Result<File> {
-        let directory = config_dir()
-            .ok_or_else(|| Message::from(AppKey::NoConfigDirectory).io(io::ErrorKind::Other))?;
-        fs::create_dir_all(&directory)?;
+        let path = lock_path()?;
+        let directory = path
+            .parent()
+            .expect("lock path has a configuration directory");
+        fs::create_dir_all(directory)?;
         OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .open(directory.join("passwords.lock"))
+            .open(path)
+    }
+
+    pub(crate) fn validate_backup_destination(path: &Path) -> io::Result<()> {
+        ensure_distinct_destination(path, &lock_path()?)
     }
 
     fn entry() -> io::Result<Entry> {
@@ -60,15 +76,25 @@ mod passwords {
         if password.is_empty() {
             return Ok(());
         }
+        edit_book(|passwords| usize::from(change_passwords(passwords, password, remember)))?;
+        Ok(())
+    }
+
+    fn edit_book(edit: impl FnOnce(&mut Vec<String>) -> usize) -> io::Result<usize> {
         let lock = lock_file()?;
         lock.lock()?;
         let entry = entry()?;
         let mut passwords = Zeroizing::new(read_unlocked(&entry)?);
-        if change_passwords(&mut passwords, password, remember) {
+        let changed = edit(&mut passwords);
+        if changed != 0 {
             let secret = Zeroizing::new(serde_json::to_vec(&*passwords)?);
             entry.set_secret(&secret).map_err(store_error)?;
         }
-        Ok(())
+        Ok(changed)
+    }
+
+    pub(crate) fn merge_passwords(imported: &mut Vec<String>) -> io::Result<usize> {
+        edit_book(|passwords| append_passwords(passwords, std::mem::take(imported)))
     }
 
     pub fn remember_password(password: &str) -> io::Result<()> {
@@ -82,6 +108,13 @@ mod passwords {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use passwords::{forget_password, read_passwords, remember_password};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) use passwords::{merge_passwords, validate_backup_destination};
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub(super) fn merge_passwords(_imported: &mut Vec<String>) -> io::Result<usize> {
+    Err(unsupported())
+}
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn read_passwords() -> io::Result<Vec<String>> {

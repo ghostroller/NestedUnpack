@@ -442,7 +442,7 @@ impl eframe::App for App {
         }
         let p = Palette::current(&ctx);
         workspace::show(self, ui, p);
-        dialogs::show(self, &ctx, p);
+        dialogs::show(self, &ctx, frame, p);
         if std::mem::take(&mut self.pick_requested) {
             self.pick(frame, &ctx);
         }

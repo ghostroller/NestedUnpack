@@ -23,6 +23,9 @@ catalog! {
         NoUsableSelection => ("选区内没有可处理的文件。", "The selection contains no files to extract."),
         OpenWindowFailed => ("无法打开解压窗口。\n{0}", "Couldn't open the extraction window.\n{0}"),
         InvalidPasswordBook => ("密码簿格式无效", "Invalid password book format."),
+        InvalidPasswordBackup => ("密码簿备份格式无效。", "Invalid password book backup format."),
+        UnsupportedPasswordBackupVersion => ("不支持此密码簿备份版本。", "This password book backup version is unsupported."),
+        ProtectedPasswordBackupPath => ("请选择独立的备份文件。", "Choose a separate file for the backup."),
         #[cfg(windows)]
         EncryptPasswordBookFailed => ("无法加密密码簿。{0}", "Couldn't encrypt the password book. {0}"),
         #[cfg(windows)]

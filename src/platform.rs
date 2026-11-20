@@ -3,6 +3,7 @@ use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::path::PathBuf;
 
+mod password_backup;
 #[cfg(not(windows))]
 mod unix;
 #[cfg(windows)]
@@ -17,6 +18,7 @@ pub use native::{
     attach_console, forget_password, menu_registered, open_directory, read_passwords,
     refresh_menu_language, register_menu, remember_password, remove_menu, run_explorer_server,
 };
+pub use password_backup::{export_passwords, import_passwords};
 
 #[cfg(windows)]
 pub use windows::read_selection;
@@ -62,17 +64,23 @@ pub fn read_console_password() -> io::Result<String> {
 }
 
 fn normalize_passwords(passwords: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::with_capacity(passwords.len());
+    append_passwords(&mut unique, passwords);
+    unique
+}
+
+fn append_passwords(passwords: &mut Vec<String>, imported: Vec<String>) -> usize {
     use zeroize::Zeroize;
 
-    let mut unique = Vec::with_capacity(passwords.len());
-    for mut password in passwords {
-        if password.is_empty() || unique.contains(&password) {
+    let original_count = passwords.len();
+    for mut password in imported {
+        if password.is_empty() || passwords.contains(&password) {
             password.zeroize();
         } else {
-            unique.push(password);
+            passwords.push(password);
         }
     }
-    unique
+    passwords.len() - original_count
 }
 
 // This changes the order only when adding a new password, as in the previous book.

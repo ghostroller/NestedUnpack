@@ -21,6 +21,7 @@ pub use explorer::{
     menu_registered, refresh_menu_language, register_menu, remove_menu, run_explorer_server,
 };
 pub use passwords::{forget_password, read_passwords, remember_password};
+pub(super) use passwords::{merge_passwords, validate_backup_destination};
 
 const SELECTION_PREFIX: &str = "NestedUnpack-Selection-";
 const SELECTION_SUFFIX: &str = ".utf8";
@@ -107,7 +108,7 @@ fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
     Ok(result)
 }
 
-fn equal_ignore_case(lhs: &OsStr, rhs: &OsStr) -> bool {
+pub(super) fn equal_ignore_case(lhs: &OsStr, rhs: &OsStr) -> bool {
     let lhs: Vec<u16> = lhs.encode_wide().collect();
     let rhs: Vec<u16> = rhs.encode_wide().collect();
     unsafe { CompareStringOrdinal(&lhs, &rhs, true) == CSTR_EQUAL }

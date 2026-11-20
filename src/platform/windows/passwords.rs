@@ -14,7 +14,10 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     i18n::{AppKey, Message},
-    platform::{change_passwords, config_dir, normalize_passwords},
+    platform::{
+        append_passwords, change_passwords, config_dir, normalize_passwords,
+        password_backup::ensure_distinct_destination,
+    },
 };
 
 fn book_path() -> io::Result<PathBuf> {
@@ -23,15 +26,25 @@ fn book_path() -> io::Result<PathBuf> {
         .ok_or_else(|| Message::from(AppKey::NoConfigDirectory).io(io::ErrorKind::Other))
 }
 
-fn lock_file(path: &Path) -> io::Result<File> {
+fn lock_path(path: &Path) -> PathBuf {
     let mut lock = OsString::from(path.as_os_str());
     lock.push(".lock");
+    PathBuf::from(lock)
+}
+
+fn lock_file(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(lock)
+        .open(lock_path(path))
+}
+
+pub(crate) fn validate_backup_destination(path: &Path) -> io::Result<()> {
+    let book = book_path()?;
+    ensure_distinct_destination(path, &book)?;
+    ensure_distinct_destination(path, &lock_path(&book))
 }
 
 pub fn read_passwords() -> io::Result<Vec<String>> {
@@ -53,17 +66,31 @@ pub fn forget_password(password: &str) -> io::Result<()> {
     update(&book_path()?, password, false)
 }
 
+pub(crate) fn merge_passwords(imported: &mut Vec<String>) -> io::Result<usize> {
+    edit_book(&book_path()?, |passwords| {
+        append_passwords(passwords, std::mem::take(imported))
+    })
+}
+
 fn update(path: &Path, password: &str, remember: bool) -> io::Result<()> {
     if password.is_empty() {
         return Ok(());
     }
+    edit_book(path, |passwords| {
+        usize::from(change_passwords(passwords, password, remember))
+    })?;
+    Ok(())
+}
+
+fn edit_book(path: &Path, edit: impl FnOnce(&mut Vec<String>) -> usize) -> io::Result<usize> {
     let parent = path.parent().ok_or_else(invalid_format)?;
     fs::create_dir_all(parent)?;
     let lock = lock_file(path)?;
     // The original Go implementation locked the first byte of this same file.
     lock.lock()?;
     let mut passwords = Zeroizing::new(read_unlocked(path)?);
-    if change_passwords(&mut passwords, password, remember) {
+    let changed = edit(&mut passwords);
+    if changed != 0 {
         let encoded = Zeroizing::new(encode_book(&passwords)?);
         let protected = protect(&encoded, true)?;
         let mut temp = tempfile::NamedTempFile::new_in(parent)?;
@@ -71,7 +98,7 @@ fn update(path: &Path, password: &str, remember: bool) -> io::Result<()> {
         temp.as_file().sync_all()?;
         temp.persist(path).map_err(|error| error.error)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn read_unlocked(path: &Path) -> io::Result<Vec<String>> {

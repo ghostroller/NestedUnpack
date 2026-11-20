@@ -8,6 +8,7 @@ NestedUnpack 是一个批量解压工具，支持 ZIP、ZIP64、RAR、7z、7z �
 - 把一个或多个文件拖到 EXE 图标上，可直接打开工作台并处理这些文件。拖入任意一个 7z 分卷即可自动查找同目录的其余分卷，同组只处理一次。
 - 打开 **右键菜单**，为当前用户注册 **解开嵌套压缩包**。Windows 11 可从 **显示更多选项** 找到该命令。从旧版升级或移动 EXE 后，在新版中注册到当前位置即可更新菜单。
 - 打开 **密码簿** 可添加、查看或删除条目。程序会优先尝试本批次验证过的密码和密码簿中的密码。手动输入时，可以选择在密码验证成功后保存。原有 Windows 密码簿继续使用同一个 DPAPI 文件 `%LOCALAPPDATA%\NestedUnpack\passwords.dpapi`。
+- 迁移密码簿时，在旧设备点击 **导出** 保存明文 JSON 文件，再到新设备的密码簿点击 **导入**。Windows、macOS 和 Linux 使用同一种文件格式。导入会保留已有密码并跳过重复项。
 - 工具栏的语言菜单提供 **跟随系统**、**简体中文** 和 **English**。语言偏好也用于命令行和当前程序注册的右键菜单。
 - 任务列表显示每个源文件的状态。选中任务可查看嵌套包、分卷、各层状态和输出目录。界面默认使用系统主题，可手动切换浅色和深色。
 
@@ -35,7 +36,7 @@ ZIP、7z 和 UnRAR 解码器随 `bin\NestedUnpack.exe` 构建，目标机器无�
 推送版本标签后，从该标签手动运行发布工作流。
 
 ```powershell
-gh workflow run release.yml --ref v0.1.1
+gh workflow run release.yml --ref v0.1.2
 ```
 
 工作流用 Rust 1.99.0 原生编译和测试下表中的版本。Release 提供独立的可执行文件、`LICENSE` 和 `THIRD-PARTY-NOTICES.txt`。从分支运行同一工作流时，可在 Actions 下载构建产物。 [发布工作流](.github/workflows/release.yml)

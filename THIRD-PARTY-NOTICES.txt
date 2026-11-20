@@ -24,14 +24,14 @@ and LGPL-2.1 license text appear below. The LGPL terms for this material
 permit modification and reverse engineering for debugging modifications.
 
 The corresponding source inputs and build instructions are available with
-the v0.1.1 source and its Cargo.lock, alongside the executable.
-https://github.com/ghostroller/NestedUnpack/releases/tag/v0.1.1
-https://github.com/ghostroller/NestedUnpack/tree/v0.1.1
+the v0.1.2 source and its Cargo.lock, alongside the executable.
+https://github.com/ghostroller/NestedUnpack/releases/tag/v0.1.2
+https://github.com/ghostroller/NestedUnpack/tree/v0.1.2
 
 The locked source archive contains the schema and binding generator input.
 https://static.crates.io/crates/wayland-protocols-plasma/wayland-protocols-plasma-0.3.12.crate
 
-To rebuild with a modified schema, unpack that crate into the v0.1.1
+To rebuild with a modified schema, unpack that crate into the v0.1.2
 source directory as wayland-protocols-plasma, edit
 plasma-wayland-protocols/src/protocols/blur.xml and add the following
 override to Cargo.toml.

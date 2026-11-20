@@ -46,10 +46,12 @@ pub(super) struct Book {
     new_password: String,
     confirming: bool,
     error: Option<Message>,
+    notice: Option<Message>,
 }
 
 impl Book {
     fn refresh(&mut self) {
+        self.notice = None;
         match platform::read_passwords() {
             Ok(values) => {
                 self.values.zeroize();
@@ -100,6 +102,54 @@ impl Book {
             }
         }
     }
+
+    fn transfer(&mut self, frame: &eframe::Frame, transfer: PasswordBookTransfer) {
+        let title = match transfer {
+            PasswordBookTransfer::Import => UiKey::ImportPasswordsTitle,
+            PasswordBookTransfer::Export => UiKey::ExportPasswordsTitle,
+        };
+        let dialog = rfd::FileDialog::new()
+            .set_parent(frame)
+            .set_title(tr(title))
+            .add_filter(tr(UiKey::PasswordBackupJson), &["json"]);
+        let result = match transfer {
+            PasswordBookTransfer::Import => {
+                let Some(path) = dialog.add_filter(tr(AppKey::AllFiles), &["*"]).pick_file() else {
+                    return;
+                };
+                platform::import_passwords(&path)
+                    .map(|count| {
+                        self.refresh();
+                        Message::from(UiKey::PasswordsImported).arg(count)
+                    })
+                    .map_err(|error| {
+                        Message::from(UiKey::PasswordImportFailed).arg(Message::from_error(error))
+                    })
+            }
+            PasswordBookTransfer::Export => {
+                let Some(path) = dialog
+                    .set_file_name("NestedUnpack-passwords.json")
+                    .save_file()
+                else {
+                    return;
+                };
+                self.error = None;
+                platform::export_passwords(&path)
+                    .map(|()| Message::from(UiKey::PasswordsExported))
+                    .map_err(|error| {
+                        Message::from(UiKey::PasswordExportFailed).arg(Message::from_error(error))
+                    })
+            }
+        };
+        self.confirming = false;
+        match result {
+            Ok(notice) => self.notice = Some(notice),
+            Err(error) => {
+                self.notice = None;
+                self.error = Some(error);
+            }
+        }
+    }
 }
 
 impl Drop for Book {
@@ -119,7 +169,7 @@ pub(super) struct MenuSettings {
     registered: Result<bool, Message>,
 }
 
-pub(super) fn show(app: &mut App, ctx: &Context, p: Palette) {
+pub(super) fn show(app: &mut App, ctx: &Context, frame: &eframe::Frame, p: Palette) {
     if let Some(prompt) = app.password.as_mut() {
         match show_password(prompt, ctx, p) {
             PasswordAction::Wait => {}
@@ -145,6 +195,12 @@ pub(super) fn show(app: &mut App, ctx: &Context, p: Palette) {
         SettingsAction::Wait => {}
         SettingsAction::Close => app.settings = None,
         SettingsAction::Licenses => app.settings = Some(Settings::Licenses),
+        SettingsAction::TransferPasswords(transfer) => {
+            if let Some(Settings::Book(book)) = app.settings.as_mut() {
+                book.transfer(frame, transfer);
+                ctx.request_repaint();
+            }
+        }
     }
 }
 
@@ -247,6 +303,13 @@ enum SettingsAction {
     Wait,
     Close,
     Licenses,
+    TransferPasswords(PasswordBookTransfer),
+}
+
+#[derive(Clone, Copy)]
+enum PasswordBookTransfer {
+    Import,
+    Export,
 }
 
 fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
@@ -333,24 +396,54 @@ fn show_book(book: &mut Book, ctx: &Context, p: Palette) -> SettingsAction {
             });
             if let Some(error) = &book.error {
                 ui.label(RichText::new(error.render(i18n::current())).color(p.danger));
+            } else if let Some(notice) = &book.notice {
+                ui.label(RichText::new(notice.render(i18n::current())).color(p.positive));
             }
-            style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
-                let close = ui.add(style::button(icon::X, tr(UiKey::Close))).clicked();
-                if book.selected.is_some()
-                    && !book.confirming
-                    && ui
-                        .add(style::button(icon::TRASH, tr(UiKey::DeleteSelected)))
-                        .clicked()
-                {
-                    book.confirming = true;
+            ui.label(
+                RichText::new(tr(UiKey::PasswordBackupPlaintext))
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            style::row(ui, 38.0, Layout::left_to_right(Align::Center), |ui| {
+                let import = ui
+                    .add(style::button(
+                        icon::DOWNLOAD_SIMPLE,
+                        tr(UiKey::ImportPasswords),
+                    ))
+                    .clicked();
+                let export = ui
+                    .add_enabled(
+                        !book.values.is_empty(),
+                        style::button(icon::UPLOAD_SIMPLE, tr(UiKey::ExportPasswords)),
+                    )
+                    .clicked();
+                let close = style::row(ui, 38.0, Layout::right_to_left(Align::Center), |ui| {
+                    let close = ui.add(style::button(icon::X, tr(UiKey::Close))).clicked();
+                    if book.selected.is_some()
+                        && !book.confirming
+                        && ui
+                            .add(style::button(icon::TRASH, tr(UiKey::DeleteSelected)))
+                            .clicked()
+                    {
+                        book.confirming = true;
+                    }
+                    close
+                });
+                if close {
+                    SettingsAction::Close
+                } else if import {
+                    SettingsAction::TransferPasswords(PasswordBookTransfer::Import)
+                } else if export {
+                    SettingsAction::TransferPasswords(PasswordBookTransfer::Export)
+                } else {
+                    SettingsAction::Wait
                 }
-                close
             })
         });
-    if modal.inner || modal.should_close() {
+    if modal.should_close() {
         SettingsAction::Close
     } else {
-        SettingsAction::Wait
+        modal.inner
     }
 }
 
@@ -458,7 +551,7 @@ mod tests {
     use eframe::egui::{Event, RawInput, Rect, Shape, Theme, pos2};
 
     #[test]
-    fn password_rows_keep_their_layout_on_hover() {
+    fn password_book_retains_row_layout_and_dispatches_transfer_actions() {
         for theme in [Theme::Light, Theme::Dark] {
             let ctx = Context::default();
             style::configure(&ctx);
@@ -471,6 +564,7 @@ mod tests {
             let mut time = 0.0;
             let mut draw = |events| {
                 time += 0.1;
+                let mut action = SettingsAction::Wait;
                 let mut output = ctx.run_ui(
                     RawInput {
                         screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 550.0))),
@@ -479,14 +573,21 @@ mod tests {
                         ..RawInput::default()
                     },
                     |ui| {
-                        show_book(&mut book, ui.ctx(), Palette::current(ui.ctx()));
+                        action = show_book(&mut book, ui.ctx(), Palette::current(ui.ctx()));
                     },
                 );
                 output.textures_delta.clear();
-                output.shapes
+                (output.shapes, action)
             };
             let geometry = |shapes: &[egui::epaint::ClippedShape]| {
-                [first, &second, tr(UiKey::AddPassword)].map(|label| {
+                [
+                    first,
+                    &second,
+                    tr(UiKey::AddPassword),
+                    tr(UiKey::ImportPasswords),
+                    tr(UiKey::ExportPasswords),
+                ]
+                .map(|label| {
                     shapes
                         .iter()
                         .find_map(|shape| match &shape.shape {
@@ -501,10 +602,10 @@ mod tests {
             for _ in 0..3 {
                 draw(Vec::new());
             }
-            let idle = geometry(&draw(Vec::new()));
+            let idle = geometry(&draw(Vec::new()).0);
             for row in &idle[..2] {
                 let pointer = row.center_top() + vec2(0.0, 5.0);
-                let hovered = draw(vec![Event::PointerMoved(pointer)]);
+                let (hovered, _) = draw(vec![Event::PointerMoved(pointer)]);
                 let p = Palette::current(&ctx);
                 assert!(hovered.iter().any(|shape| {
                     matches!(&shape.shape, Shape::Rect(rect)
@@ -513,7 +614,29 @@ mod tests {
                 }));
                 assert_eq!(idle, geometry(&hovered), "{theme:?}");
             }
-            assert_eq!(idle, geometry(&draw(vec![Event::PointerGone])), "{theme:?}");
+            assert_eq!(
+                idle,
+                geometry(&draw(vec![Event::PointerGone]).0),
+                "{theme:?}"
+            );
+            let click = |rect: Rect| {
+                let pos = rect.center();
+                let button = |pressed| Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                vec![Event::PointerMoved(pos), button(true), button(false)]
+            };
+            assert!(matches!(
+                draw(click(idle[3])).1,
+                SettingsAction::TransferPasswords(PasswordBookTransfer::Import)
+            ));
+            assert!(matches!(
+                draw(click(idle[4])).1,
+                SettingsAction::TransferPasswords(PasswordBookTransfer::Export)
+            ));
         }
     }
 }
